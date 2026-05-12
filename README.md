@@ -121,11 +121,19 @@ Key outputs: `results/ncrna_desert_catalog.tsv`, `ncrna_desert_summary.tsv`, `nc
 
 Targeted GC-content analysis at z-score dips and spikes, replacing the earlier GD588-only correlation panel from Analysis D.
 
-Each 1 kb window is classified as `dip` / `spike` / `normal` using both absolute thresholds (z < −2 or z > +2) and within-desert relative thresholds (> 1.5 SD from the desert mean). The GC content difference between extreme and normal windows is tested per desert (Cohen's d effect size + Welch t-test), and Pearson r(z_adj ~ GC_content_1k) is computed for all 633 deserts to identify where the GC adjustment most strongly tracks the z-score profile.
+Each 1 kb window is classified as `dip` / `spike` / `normal` using both absolute thresholds (z < -2 or z > +2) and within-desert relative thresholds (> 1.5 SD from the desert mean). Beyond the original per-desert effect-size test (Cohen's d + Welch t-test), the script now adds:
+
+- spatial GC line profiles (multi-scale: 1k/10k/100k/1M) instead of point clouds
+- GC deviation from each desert baseline (`GC_1k - mean_desert_GC_1k`)
+- local-vs-regional contrast (`GC_1k - GC_100k`)
+- GC-detrended z residual profiles (`z_adj` residual after linear GC fit)
+- lagged cross-correlation peak lag between z and GC
+- binned GC-vs-z trend plots (quantile bins with mean +/- SEM)
+- fleet-level GC-effect volcano plot and pooled class-density summary
 
 All thresholds are defined as named constants at the top of the file and can be tuned without touching any other code.
 
-Key outputs: `results/gc_extrema_desert_flags.tsv` (all 633 deserts), `gc_extrema_comparison.tsv` (notable deserts only), `gc_extrema_exemplar_{name}.png` (×5), `gc_extrema_fleet_overview.png`
+Key outputs: `results/gc_extrema_desert_flags.tsv` (all 633 deserts), `gc_extrema_comparison.tsv` (notable deserts only, includes CCF/residual stats), `gc_extrema_exemplar_{name}.png` (x5 enhanced panels), `gc_extrema_fleet_overview.png` (includes volcano + pooled density)
 
 ---
 
