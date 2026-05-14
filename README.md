@@ -233,8 +233,8 @@ Data files live in `data/` and are not tracked in this repository. All files are
 | `gencode.v39.annotation.gtf.gz` | [GENCODE v39](https://www.gencodegenes.org/human/release_39.html) | Gene annotations for GRCh38; used to map ncRNA positions into deserts |
 | `dnm01_10x_ft_logit_regularized_coef_z_3mer_context_flnk_1k-1M.txt` | gnomAD v3 (Gnocchi pipeline) | De novo mutation model coefficients |
 | `desert.ncz.exemplars.apr2026.txt` | This project | Coordinates of the 5 hand-curated exemplar gene deserts |
-| `GM12878_hg38_smoothed.txt` | ENCODE / replication timing resources | Per-position replication timing values used in `desert_replication_timing.py` |
-| `LADs/*.bed.gz` | LAD atlas (12 tissues/cell types) | Cell-type-specific LAD intervals used to compute occupancy and constitutive LAD labels |
+| `GM12878_hg38_smoothed.txt` | [Koren Lab](https://www.thekorenlab.org/data) | Per-position replication timing values used in `desert_replication_timing.py` |
+| `LADs/*.bed.gz` | [LAD atlas](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE155244) (12 tissues/cell types) | Cell-type-specific LAD intervals used to compute occupancy and constitutive LAD labels |
 | `gnomad.v4.1.sv.sites.bed.gz` | [gnomAD SV v4.1](https://gnomad.broadinstitute.org/downloads) | Structural variant catalog used for common large-SV desert-overlap analysis |
 | `phyloP447wayPrimates.txt.gz` | UCSC / Zoonomia (447-way primate phyloP summary) | Conservation-score summary blocks aggregated to 1 kb windows in `desert_conserved_elements.py` |
 
