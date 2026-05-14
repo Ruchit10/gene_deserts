@@ -18,7 +18,8 @@ The central question: **do gene deserts that show anomalous constraint signature
 
 ```
 gene_deserts/
-├── desert_utils.py                  # shared data-loading and labelling utilities
+├── utils/
+│   └── desert_utils.py              # shared data-loading and labelling utilities
 │
 ├── unadjusted_gnocchi_analysis.py   # entry point — builds the core merged table
 ├── distributions.py                 # Analysis B
@@ -33,6 +34,14 @@ gene_deserts/
 ├── mappability_gene_desert.py       # mapping quality / LCR / segdup diagnostics
 ├── desert_ncrna_landscape.py        # ncRNA annotation inside deserts
 ├── desert_gc_extrema.py             # GC content at z-score dips and spikes
+├── extended_analyses/
+│   ├── desert_gc_nonlinear.py       # non-linear GC-vs-z diagnostics (spline vs linear)
+│   ├── desert_trinuc_context.py     # trinucleotide context composition bias diagnostics
+│   ├── desert_background_selection.py # BGS proxy via edge-distance and recombination
+│   ├── desert_replication_timing.py # replication timing overlay (GM12878)
+│   ├── desert_lad_overlap.py        # LAD occupancy/concordance across 12 cell types
+│   ├── desert_conserved_elements.py # phyloP conservation support for z spikes
+│   └── desert_sv_overlap.py         # common large SV overlap (gnomAD v4.1)
 │
 ├── data/                            # input data (not tracked in git — see below)
 └── results/                         # all output figures and tables (tracked)
@@ -42,7 +51,7 @@ gene_deserts/
 
 ## Scripts
 
-### `desert_utils.py` — shared utilities
+### `utils/desert_utils.py` — shared utilities
 
 Central module imported by every analysis script. Defines:
 
@@ -137,6 +146,20 @@ Key outputs: `results/gc_extrema_desert_flags.tsv` (all 633 deserts), `gc_extrem
 
 ---
 
+#### Extended anomaly diagnostics (new)
+
+| Script | Focus | Primary outputs |
+|---|---|---|
+| `desert_gc_nonlinear.py` | Tests whether persistent GC-linked anomalies (e.g. GD588 class) are better explained by non-linear GC relationships than linear correction | `gc_nonlinear_desert_summary.tsv`, `gc_nonlinear_exemplar_{name}.png`, `gc_nonlinear_fleet_overview.png` |
+| `desert_trinuc_context.py` | Quantifies context-spectrum shifts (desert vs genome) and flags trinucleotide-composition bias in unadjusted expectations | `trinuc_context_desert_summary.tsv`, `trinuc_context_exemplar_{name}.png`, `trinuc_context_fleet_overview.png` |
+| `desert_background_selection.py` | B-value proxy analysis using edge-distance gradients + recombination interaction (no external B-map required) | `bgs_desert_summary.tsv`, `bgs_exemplar_{name}.png`, `bgs_fleet_overview.png` |
+| `desert_replication_timing.py` | Joins GM12878 replication timing and tests RT associations with z_adj/z_unadj/delta_z (including partial corr vs GC) | `replication_timing_desert_summary.tsv`, `replication_timing_exemplar_{name}.png`, `replication_timing_fleet_overview.png` |
+| `desert_lad_overlap.py` | Computes LAD occupancy across 12 LAD tracks and constitutive LAD effects on desert scores | `lad_desert_summary.tsv`, `lad_track_overlap_by_desert.tsv`, `lad_exemplar_{name}.png`, `lad_fleet_overview.png` |
+| `desert_conserved_elements.py` | Uses phyloP447way primate conservation to ask whether desert z spikes are conservation-backed | `conserved_elements_desert_summary.tsv`, `conserved_elements_exemplar_{name}.png`, `conserved_elements_fleet_overview.png` |
+| `desert_sv_overlap.py` | Tests overlap with common large SVs (INV/DEL/DUP/CPX/CNV) from gnomAD v4.1 | `sv_desert_summary.tsv`, `sv_flagged_deserts.tsv`, `sv_fleet_overview.png` |
+
+---
+
 ## Running the analyses
 
 Scripts must be run from the repository root (not from inside `data/` or `results/`):
@@ -161,6 +184,15 @@ python analysis_fleet_deserts.py
 python mappability_gene_desert.py
 python desert_ncrna_landscape.py
 python desert_gc_extrema.py      # requires feature cache (auto-built on first run)
+
+# 4. Extended anomaly diagnostics (all require step 1; order-independent)
+python extended_analyses/desert_gc_nonlinear.py
+python extended_analyses/desert_trinuc_context.py
+python extended_analyses/desert_background_selection.py
+python extended_analyses/desert_replication_timing.py
+python extended_analyses/desert_lad_overlap.py
+python extended_analyses/desert_conserved_elements.py
+python extended_analyses/desert_sv_overlap.py
 ```
 
 The feature cache (`results/_features_cache.pkl.gz`) is built automatically on the first run of any script that needs it. If you switch Python/pandas environments it will be automatically detected as stale and rebuilt.
@@ -188,7 +220,7 @@ pip install numpy pandas matplotlib scipy scikit-learn statsmodels
 
 ## Data
 
-Data files live in `data/` and are not tracked in this repository (~1.2 GB total). All files are either publicly available or part of the gnomAD v3 resource.
+Data files live in `data/` and are not tracked in this repository. All files are publicly available or derived from public resources.
 
 | File | Source | Description |
 |---|---|---|
@@ -201,6 +233,10 @@ Data files live in `data/` and are not tracked in this repository (~1.2 GB total
 | `gencode.v39.annotation.gtf.gz` | [GENCODE v39](https://www.gencodegenes.org/human/release_39.html) | Gene annotations for GRCh38; used to map ncRNA positions into deserts |
 | `dnm01_10x_ft_logit_regularized_coef_z_3mer_context_flnk_1k-1M.txt` | gnomAD v3 (Gnocchi pipeline) | De novo mutation model coefficients |
 | `desert.ncz.exemplars.apr2026.txt` | This project | Coordinates of the 5 hand-curated exemplar gene deserts |
+| `GM12878_hg38_smoothed.txt` | ENCODE / replication timing resources | Per-position replication timing values used in `desert_replication_timing.py` |
+| `LADs/*.bed.gz` | LAD atlas (12 tissues/cell types) | Cell-type-specific LAD intervals used to compute occupancy and constitutive LAD labels |
+| `gnomad.v4.1.sv.sites.bed.gz` | [gnomAD SV v4.1](https://gnomad.broadinstitute.org/downloads) | Structural variant catalog used for common large-SV desert-overlap analysis |
+| `phyloP447wayPrimates.txt.gz` | UCSC / Zoonomia (447-way primate phyloP summary) | Conservation-score summary blocks aggregated to 1 kb windows in `desert_conserved_elements.py` |
 
 For the Gnocchi-derived files, see the [gnomAD non-coding constraint preprint](https://www.biorxiv.org/content/10.1101/2022.03.20.485034) and the methods PDF `data/nc_constraint_gnomadv3_adj_r_methods.pdf` included in this repo.
 

@@ -18,8 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from desert_utils import (
-    DESERTS,
+from utils.desert_utils import (
     DESERT_ORDER,
     FEATURE_COLUMNS,
     RESULTS_DIR,

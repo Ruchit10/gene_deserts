@@ -23,7 +23,7 @@ import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 
-from desert_utils import (
+from utils.desert_utils import (
     DESERTS,
     FEATURE_SCALES,
     RESULTS_DIR,

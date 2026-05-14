@@ -8,8 +8,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-from desert_utils import DESERTS as deserts
-from desert_utils import DATA_DIR as DATA, RESULTS_DIR as OUT
+from utils.desert_utils import DESERTS as deserts, DATA_DIR as DATA, RESULTS_DIR as OUT
 
 # ── Step 1+2: Load, merge, recompute ─────────────────────────────────────────
 print("Loading unadjusted expected sums …")

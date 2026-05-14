@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import skew, ttest_1samp
 
-from desert_utils import (
+from utils.desert_utils import (
     DESERTS,
     RESULTS_DIR,
     label_deserts_fleet,

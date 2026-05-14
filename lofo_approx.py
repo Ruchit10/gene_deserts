@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import Ridge
 
-from desert_utils import (
+from utils.desert_utils import (
     DESERT_ORDER,
     FEATURE_BASES,
     FEATURE_COLUMNS,

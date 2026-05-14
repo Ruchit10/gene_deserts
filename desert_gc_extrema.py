@@ -31,7 +31,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr, ttest_ind
 
-from desert_utils import (
+from utils.desert_utils import (
     DESERTS,
     DESERT_ORDER,
     RESULTS_DIR,

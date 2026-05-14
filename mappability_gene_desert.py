@@ -31,7 +31,7 @@ import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 
-from desert_utils import (
+from utils.desert_utils import (
     DATA_DIR,
     DESERTS,
     DESERT_ORDER,
