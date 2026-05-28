@@ -118,6 +118,9 @@ def _plot_exemplar(
     ax = axes[1, 0]
     stat = desert_stats[desert_stats["desert_id"] == desert_id].iloc[0]
     oe_val = stat["oe_unadj_desert"]
+    kl_val = float(stat["kl_desert_vs_genome"])
+    chi2_stat = float(stat["chi2_stat"])
+    chi2_p = float(stat["chi2_pvalue"])
     ax.scatter(
         merged["p_genome"],
         merged["p_desert"],
@@ -130,6 +133,13 @@ def _plot_exemplar(
     ax.set_xlabel("Genome context proportion")
     ax.set_ylabel(f"{desert_id} context proportion")
     ax.set_title(f"Composition shift (desert O/E_unadj={oe_val:.3f})")
+    ax.text(
+        0.03, 0.97,
+        f"KL={kl_val:.4f}\n$\\chi^2$={chi2_stat:.1f}  p={chi2_p:.2e}",
+        transform=ax.transAxes,
+        va="top", ha="left", fontsize=8,
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="lightyellow", edgecolor="0.7", alpha=0.9),
+    )
 
     ax = axes[1, 1]
     ax.scatter(merged["log2_enrich"], np.log10(merged["p_desert"] + 1e-12), color="tab:orange", alpha=0.8)
@@ -139,14 +149,18 @@ def _plot_exemplar(
     ax.set_ylabel("log10(desert proportion)")
     ax.set_title("Most shifted contexts")
 
-    fig.suptitle(f"{desert_id} trinucleotide context diagnostics", fontsize=13)
+    fig.suptitle(
+        f"{desert_id} trinucleotide context diagnostics"
+        f"   |   KL={kl_val:.4f}   $\\chi^2$={chi2_stat:.1f}   p={chi2_p:.2e}",
+        fontsize=12,
+    )
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
 
 def _plot_fleet_overview(summary: pd.DataFrame, out_path: str) -> None:
-    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    fig, axes = plt.subplots(2, 3, figsize=(18, 9))
 
     ax = axes[0, 0]
     ax.hist(summary["kl_desert_vs_genome"].dropna(), bins=35, color="tab:blue", edgecolor="white")
@@ -166,6 +180,13 @@ def _plot_fleet_overview(summary: pd.DataFrame, out_path: str) -> None:
     ax.set_ylabel("mean z_unadj")
     ax.set_title("Divergence vs unadjusted anomaly")
 
+    ax = axes[0, 2]
+    chi_df = summary.dropna(subset=["chi2_pvalue"])
+    ax.hist(chi_df["chi2_pvalue"], bins=40, color="tab:red", edgecolor="white", alpha=0.85)
+    ax.set_xlabel("$\\chi^2$ p-value (desert vs genome context)")
+    ax.set_ylabel("Number of deserts")
+    ax.set_title("$\\chi^2$ p-value distribution")
+
     ax = axes[1, 0]
     plot_df = summary.dropna(subset=["kl_desert_vs_genome", "mean_gc_1k"])
     ax.scatter(plot_df["mean_gc_1k"], plot_df["kl_desert_vs_genome"], s=16, alpha=0.65, color="tab:green")
@@ -179,11 +200,36 @@ def _plot_fleet_overview(summary: pd.DataFrame, out_path: str) -> None:
     ax.set_title("GC strata vs context divergence")
 
     ax = axes[1, 1]
+    vol_df = summary.dropna(subset=["kl_desert_vs_genome", "chi2_pvalue"]).copy()
+    vol_df["neg_log10_p"] = -np.log10(vol_df["chi2_pvalue"].clip(lower=1e-300))
+    ax.scatter(vol_df["kl_desert_vs_genome"], vol_df["neg_log10_p"], s=16, alpha=0.65, color="tab:orange")
+    for desert_id in DESERT_ORDER:
+        row = vol_df[vol_df["desert_id"] == desert_id]
+        if row.empty:
+            continue
+        ax.annotate(desert_id, (row["kl_desert_vs_genome"].iloc[0], row["neg_log10_p"].iloc[0]), fontsize=8)
+    ax.set_xlabel("KL divergence")
+    ax.set_ylabel("$-\\log_{10}$($\\chi^2$ p-value)")
+    ax.set_title("KL vs $\\chi^2$ significance")
+
+    ax = axes[1, 2]
     top = summary.nlargest(12, "kl_desert_vs_genome")
-    ax.barh(top["desert_id"], top["kl_desert_vs_genome"], color="tab:purple", alpha=0.85)
+    colors = plt.cm.RdPu(  # type: ignore[attr-defined]
+        np.linspace(0.4, 0.9, len(top))
+    )
+    bars = ax.barh(top["desert_id"], top["kl_desert_vs_genome"], color=colors, alpha=0.9)
+    for bar, (_, row) in zip(bars, top.iterrows()):
+        chi2_p = row["chi2_pvalue"]
+        label = f"p={chi2_p:.1e}" if not np.isnan(chi2_p) else ""
+        ax.text(
+            bar.get_width() + float(top["kl_desert_vs_genome"].max()) * 0.01,
+            bar.get_y() + bar.get_height() / 2,
+            label,
+            va="center", fontsize=7, color="0.3",
+        )
     ax.invert_yaxis()
     ax.set_xlabel("KL divergence")
-    ax.set_title("Top context-divergent deserts")
+    ax.set_title("Top context-divergent deserts ($\\chi^2$ p shown)")
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
