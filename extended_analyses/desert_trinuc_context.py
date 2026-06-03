@@ -89,69 +89,93 @@ def _plot_exemplar(
     sub = desert_ctx[desert_ctx["desert_id"] == desert_id].copy()
     if sub.empty:
         return
-    merged = sub.merge(genome_ctx, on="context", how="left")
-    merged["p_desert"] = merged["desert_expected_sum"] / merged["desert_expected_sum"].sum()
-    merged["p_genome"] = merged["genome_expected_sum"] / merged["genome_expected_sum"].sum()
-    merged["log2_enrich"] = np.log2((merged["p_desert"] + 1e-12) / (merged["p_genome"] + 1e-12))
-    merged = merged.sort_values("p_desert", ascending=False).head(TOP_CONTEXTS)
+
+    # Build full (all-context) distribution tables for this desert.
+    all_ctx = sorted(set(genome_ctx["context"]) | set(sub["context"]))
+    p_d = (
+        sub.set_index("context")["desert_expected_sum"]
+        .reindex(all_ctx, fill_value=0.0)
+    )
+    p_g = (
+        genome_ctx.set_index("context")["genome_expected_sum"]
+        .reindex(all_ctx, fill_value=0.0)
+    )
+    full = pd.DataFrame({"context": all_ctx,
+                         "p_desert": p_d.values / p_d.values.sum().clip(1e-12),
+                         "p_genome": p_g.values / p_g.values.sum().clip(1e-12)})
+    full["prop_shift"] = full["p_desert"] - full["p_genome"]
+    full["kl_contrib"] = (full["p_desert"] + 1e-12) * np.log(
+        (full["p_desert"] + 1e-12) / (full["p_genome"] + 1e-12)
+    )
+    full["abs_shift"] = full["prop_shift"].abs()
+    # Central base: works for standard 3-mers (e.g. "ACG") and longer strings.
+    full["central_base"] = full["context"].str[1].where(full["context"].str.len() >= 3,
+                                                         full["context"].str[0])
+
+    stat = desert_stats[desert_stats["desert_id"] == desert_id].iloc[0]
+    oe_val = float(stat["oe_unadj_desert"])
+    kl_val = float(stat["kl_desert_vs_genome"])
+    chi2_stat_val = float(stat["chi2_stat"])
+    chi2_p = float(stat["chi2_pvalue"])
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 9))
 
+    # ── [0,0]: Composition shift scatter (all contexts) ──────────────────
     ax = axes[0, 0]
-    x = np.arange(len(merged))
-    ax.bar(x - 0.2, merged["p_desert"], width=0.4, label=desert_id, color="tab:blue")
-    ax.bar(x + 0.2, merged["p_genome"], width=0.4, label="genome", color="tab:gray")
-    ax.set_xticks(x)
-    ax.set_xticklabels(merged["context"], rotation=75, fontsize=7)
-    ax.set_ylabel("Expected-count proportion")
-    ax.set_title("Top contexts by desert composition")
-    ax.legend(fontsize=8)
-
-    ax = axes[0, 1]
-    ax.bar(x, merged["log2_enrich"], color="tab:purple", alpha=0.85)
-    ax.axhline(0, color="black", lw=0.9, ls="--")
-    ax.set_xticks(x)
-    ax.set_xticklabels(merged["context"], rotation=75, fontsize=7)
-    ax.set_ylabel("log2(desert/genome)")
-    ax.set_title("Context enrichment")
-
-    ax = axes[1, 0]
-    stat = desert_stats[desert_stats["desert_id"] == desert_id].iloc[0]
-    oe_val = stat["oe_unadj_desert"]
-    kl_val = float(stat["kl_desert_vs_genome"])
-    chi2_stat = float(stat["chi2_stat"])
-    chi2_p = float(stat["chi2_pvalue"])
-    ax.scatter(
-        merged["p_genome"],
-        merged["p_desert"],
-        s=45,
-        alpha=0.7,
-        color="tab:blue",
-    )
-    lim = max(float(merged["p_genome"].max()), float(merged["p_desert"].max()))
+    ax.scatter(full["p_genome"], full["p_desert"], s=18, alpha=0.5,
+               color="tab:blue", linewidths=0)
+    lim = max(float(full["p_genome"].max()), float(full["p_desert"].max())) * 1.05
     ax.plot([0, lim], [0, lim], "k--", lw=1)
+    for _, row in full.nlargest(6, "abs_shift").iterrows():
+        ax.annotate(row["context"],
+                    (row["p_genome"], row["p_desert"]),
+                    fontsize=7, color="0.25",
+                    xytext=(4, 2), textcoords="offset points")
     ax.set_xlabel("Genome context proportion")
     ax.set_ylabel(f"{desert_id} context proportion")
-    ax.set_title(f"Composition shift (desert O/E_unadj={oe_val:.3f})")
-    ax.text(
-        0.03, 0.97,
-        f"KL={kl_val:.4f}\n$\\chi^2$={chi2_stat:.1f}  p={chi2_p:.2e}",
-        transform=ax.transAxes,
-        va="top", ha="left", fontsize=8,
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="lightyellow", edgecolor="0.7", alpha=0.9),
-    )
+    ax.set_title(f"Composition shift  (O/E unadj = {oe_val:.3f})")
 
+    # ── [0,1]: Per-context KL contribution (top 15) ──────────────────────
+    ax = axes[0, 1]
+    top_kl = full.reindex(full["kl_contrib"].abs().nlargest(15).index).sort_values("kl_contrib")
+    bar_colors = ["tab:red" if v < 0 else "tab:blue" for v in top_kl["kl_contrib"]]
+    ax.barh(top_kl["context"], top_kl["kl_contrib"], color=bar_colors, alpha=0.85)
+    ax.axvline(0, color="k", lw=0.8)
+    ax.set_xlabel(r"$p_k \log(p_k / q_k)$  (contribution to KL)")
+    ax.set_title(f"Per-context KL contribution  (total KL = {kl_val:.4f})")
+    ax.tick_params(axis="y", labelsize=8)
+
+    # ── [1,0]: Fleet KL histogram — where does this desert sit? ──────────
+    ax = axes[1, 0]
+    fleet_kl = desert_stats["kl_desert_vs_genome"].dropna()
+    pct = float((fleet_kl < kl_val).mean()) * 100
+    ax.hist(fleet_kl, bins=40, color="tab:gray", edgecolor="white", alpha=0.75)
+    ax.axvline(kl_val, color="tab:red", lw=2,
+               label=f"{desert_id}  KL={kl_val:.4f}  ({pct:.0f}th pct)")
+    ax.set_xlabel("KL divergence (desert || genome)")
+    ax.set_ylabel("Number of deserts")
+    ax.set_title(f"Divergence in fleet context  ($\\chi^2$ p = {chi2_p:.2e})")
+    ax.legend(fontsize=8)
+
+    # ── [1,1]: Composition by central base ───────────────────────────────
     ax = axes[1, 1]
-    ax.scatter(merged["log2_enrich"], np.log10(merged["p_desert"] + 1e-12), color="tab:orange", alpha=0.8)
-    for _, row in merged.head(8).iterrows():
-        ax.annotate(row["context"], (row["log2_enrich"], np.log10(row["p_desert"] + 1e-12)), fontsize=7)
-    ax.set_xlabel("log2 enrichment")
-    ax.set_ylabel("log10(desert proportion)")
-    ax.set_title("Most shifted contexts")
+    base_grp = (full.groupby("central_base", sort=True)[["p_desert", "p_genome"]]
+                .sum().reset_index())
+    x = np.arange(len(base_grp))
+    w = 0.35
+    ax.bar(x - w / 2, base_grp["p_desert"], width=w,
+           label=desert_id, color="tab:blue", alpha=0.85)
+    ax.bar(x + w / 2, base_grp["p_genome"], width=w,
+           label="Genome", color="tab:gray", alpha=0.85)
+    ax.set_xticks(x)
+    ax.set_xticklabels(base_grp["central_base"], fontsize=11)
+    ax.set_ylabel("Summed context proportion")
+    ax.set_title("Composition by central trinucleotide base")
+    ax.legend(fontsize=8)
 
     fig.suptitle(
         f"{desert_id} trinucleotide context diagnostics"
-        f"   |   KL={kl_val:.4f}   $\\chi^2$={chi2_stat:.1f}   p={chi2_p:.2e}",
+        f"   |   KL = {kl_val:.4f}   $\\chi^2$ = {chi2_stat_val:.1f}   p = {chi2_p:.2e}",
         fontsize=12,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.96))
@@ -160,76 +184,64 @@ def _plot_exemplar(
 
 
 def _plot_fleet_overview(summary: pd.DataFrame, out_path: str) -> None:
-    fig, axes = plt.subplots(2, 3, figsize=(18, 9))
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
 
+    # ── [0,0]: KL divergence distribution ────────────────────────────────
     ax = axes[0, 0]
-    ax.hist(summary["kl_desert_vs_genome"].dropna(), bins=35, color="tab:blue", edgecolor="white")
+    ax.hist(summary["kl_desert_vs_genome"].dropna(), bins=35,
+            color="tab:blue", edgecolor="white", alpha=0.85)
     ax.set_xlabel("KL divergence (desert || genome)")
     ax.set_ylabel("Number of deserts")
-    ax.set_title("Context divergence across deserts")
+    ax.set_title("Context divergence distribution across deserts")
 
+    # ── [0,1]: KL vs mean z_unadj — key hypothesis ───────────────────────
     ax = axes[0, 1]
     plot_df = summary.dropna(subset=["kl_desert_vs_genome", "mean_z_unadj"])
-    ax.scatter(plot_df["kl_desert_vs_genome"], plot_df["mean_z_unadj"], s=16, alpha=0.65, color="tab:gray")
+    ax.scatter(plot_df["kl_desert_vs_genome"], plot_df["mean_z_unadj"],
+               s=16, alpha=0.55, color="tab:gray")
     for desert_id in DESERT_ORDER:
         row = plot_df[plot_df["desert_id"] == desert_id]
         if row.empty:
             continue
-        ax.annotate(desert_id, (row["kl_desert_vs_genome"].iloc[0], row["mean_z_unadj"].iloc[0]), fontsize=8)
+        ax.annotate(desert_id,
+                    (row["kl_desert_vs_genome"].iloc[0], row["mean_z_unadj"].iloc[0]),
+                    fontsize=8)
     ax.set_xlabel("KL divergence")
-    ax.set_ylabel("mean z_unadj")
-    ax.set_title("Divergence vs unadjusted anomaly")
+    ax.set_ylabel("Mean z_unadj")
+    ax.set_title("Context divergence vs unadjusted constraint anomaly")
 
-    ax = axes[0, 2]
-    chi_df = summary.dropna(subset=["chi2_pvalue"])
-    ax.hist(chi_df["chi2_pvalue"], bins=40, color="tab:red", edgecolor="white", alpha=0.85)
-    ax.set_xlabel("$\\chi^2$ p-value (desert vs genome context)")
-    ax.set_ylabel("Number of deserts")
-    ax.set_title("$\\chi^2$ p-value distribution")
-
+    # ── [1,0]: GC content vs KL — confounder check ───────────────────────
     ax = axes[1, 0]
     plot_df = summary.dropna(subset=["kl_desert_vs_genome", "mean_gc_1k"])
-    ax.scatter(plot_df["mean_gc_1k"], plot_df["kl_desert_vs_genome"], s=16, alpha=0.65, color="tab:green")
+    ax.scatter(plot_df["mean_gc_1k"], plot_df["kl_desert_vs_genome"],
+               s=16, alpha=0.55, color="tab:green")
     for desert_id in DESERT_ORDER:
         row = plot_df[plot_df["desert_id"] == desert_id]
         if row.empty:
             continue
-        ax.annotate(desert_id, (row["mean_gc_1k"].iloc[0], row["kl_desert_vs_genome"].iloc[0]), fontsize=8)
-    ax.set_xlabel("mean GC_content_1k")
+        ax.annotate(desert_id,
+                    (row["mean_gc_1k"].iloc[0], row["kl_desert_vs_genome"].iloc[0]),
+                    fontsize=8)
+    ax.set_xlabel("Mean GC content (1 kb windows)")
     ax.set_ylabel("KL divergence")
-    ax.set_title("GC strata vs context divergence")
+    ax.set_title("GC content vs context divergence (confounder check)")
 
+    # ── [1,1]: KL vs −log10(χ² p) significance volcano ───────────────────
     ax = axes[1, 1]
     vol_df = summary.dropna(subset=["kl_desert_vs_genome", "chi2_pvalue"]).copy()
     vol_df["neg_log10_p"] = -np.log10(vol_df["chi2_pvalue"].clip(lower=1e-300))
-    ax.scatter(vol_df["kl_desert_vs_genome"], vol_df["neg_log10_p"], s=16, alpha=0.65, color="tab:orange")
+    ax.scatter(vol_df["kl_desert_vs_genome"], vol_df["neg_log10_p"],
+               s=16, alpha=0.55, color="tab:orange")
     for desert_id in DESERT_ORDER:
         row = vol_df[vol_df["desert_id"] == desert_id]
         if row.empty:
             continue
-        ax.annotate(desert_id, (row["kl_desert_vs_genome"].iloc[0], row["neg_log10_p"].iloc[0]), fontsize=8)
+        ax.annotate(desert_id,
+                    (row["kl_desert_vs_genome"].iloc[0], row["neg_log10_p"].iloc[0]),
+                    fontsize=8)
     ax.set_xlabel("KL divergence")
-    ax.set_ylabel("$-\\log_{10}$($\\chi^2$ p-value)")
-    ax.set_title("KL vs $\\chi^2$ significance")
-
-    ax = axes[1, 2]
-    top = summary.nlargest(12, "kl_desert_vs_genome")
-    colors = plt.cm.RdPu(  # type: ignore[attr-defined]
-        np.linspace(0.4, 0.9, len(top))
-    )
-    bars = ax.barh(top["desert_id"], top["kl_desert_vs_genome"], color=colors, alpha=0.9)
-    for bar, (_, row) in zip(bars, top.iterrows()):
-        chi2_p = row["chi2_pvalue"]
-        label = f"p={chi2_p:.1e}" if not np.isnan(chi2_p) else ""
-        ax.text(
-            bar.get_width() + float(top["kl_desert_vs_genome"].max()) * 0.01,
-            bar.get_y() + bar.get_height() / 2,
-            label,
-            va="center", fontsize=7, color="0.3",
-        )
-    ax.invert_yaxis()
-    ax.set_xlabel("KL divergence")
-    ax.set_title("Top context-divergent deserts ($\\chi^2$ p shown)")
+    ax.set_ylabel(r"$-\log_{10}$($\chi^2$ p-value)")
+    ax.set_title(r"Divergence magnitude vs $\chi^2$ significance")
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
