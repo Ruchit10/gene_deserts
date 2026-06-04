@@ -32,6 +32,8 @@ DESERT_ORDER: list[str] = list(DESERTS.keys())
 
 GNOCCHI_TABLE = os.path.join(RESULTS_DIR, "gnocchi_adj_vs_unadj.tsv.gz")
 FEATURES_TABLE = os.path.join(DATA_DIR, "genomic_features13_genome_1kb.txt.gz")
+FEATURES17_TABLE = os.path.join(DATA_DIR, "genomic_features17_1kb.txt.gz")
+REPLICATION_TIMING_COLUMN = "RT_BG02"
 REPLICATION_TIMING_TABLE = os.path.join(DATA_DIR, "GM12878_hg38_smoothed.txt")
 PHYLOP_TABLE = os.path.join(DATA_DIR, "phyloP447wayPrimates.txt.gz")
 GNOMAD_SV_TABLE = os.path.join(DATA_DIR, "gnomad.v4.1.sv.sites.bed.gz")
@@ -205,6 +207,26 @@ def _normalize_chrom_value(raw: object) -> str:
     aliases = {"23": "X", "24": "Y", "25": "M", "MT": "M", "Mt": "M", "m": "M"}
     text = aliases.get(text, text)
     return f"chr{text}"
+
+
+def load_replication_timing_feature(
+    element_ids: Iterable[str] | None = None,
+    path: str = FEATURES17_TABLE,
+    column: str = REPLICATION_TIMING_COLUMN,
+) -> pd.DataFrame:
+    """Load per-window replication timing from the features-17 table.
+
+    Unlike `load_replication_timing` (irregular genomic points that must be
+    binned to windows), this resource is already annotated per 1kb window and
+    keyed by `element_id`, so it can be merged directly onto the Gnocchi
+    windows. Returns columns `element_id` and `rt_value`.
+    """
+    df = pd.read_csv(path, sep="\t", usecols=["element_id", column])
+    df = df.rename(columns={column: "rt_value"})
+    df["rt_value"] = pd.to_numeric(df["rt_value"], errors="coerce")
+    if element_ids is not None:
+        df = df[df["element_id"].isin(set(element_ids))]
+    return df.reset_index(drop=True)
 
 
 def load_replication_timing(path: str = REPLICATION_TIMING_TABLE) -> pd.DataFrame:

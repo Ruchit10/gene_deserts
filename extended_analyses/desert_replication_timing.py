@@ -18,12 +18,11 @@ import pandas as pd
 from utils.desert_utils import (
     DESERT_ORDER,
     RESULTS_DIR,
-    bin_values_to_windows,
     label_deserts_fleet,
     load_all_deserts,
     load_features,
     load_gnocchi,
-    load_replication_timing,
+    load_replication_timing_feature,
 )
 
 GC_COL = "GC_content_1k"
@@ -169,13 +168,10 @@ def main() -> None:
     gn["start"] = gn["start"].astype(np.int64)
     gn["end"] = gn["end"].astype(np.int64)
 
-    print("Loading replication timing points ...")
-    rt_points = load_replication_timing()
-    gn["rt_value"] = bin_values_to_windows(
-        points_df=rt_points,
-        windows_df=gn[["chrom", "start", "end"]],
-        value_col="rt_value",
-    )
+    print("Loading per-window replication timing (RT_BG02) ...")
+    rt_feature = load_replication_timing_feature(element_ids=gn["element_id"].tolist())
+    gn = gn.merge(rt_feature, on="element_id", how="left")
+    print(f"  RT joined; missing fraction: {gn['rt_value'].isna().mean():.3f}")
 
     print("Loading GC feature ...")
     feats = load_features(element_ids=gn["element_id"].tolist())[["element_id", GC_COL]]

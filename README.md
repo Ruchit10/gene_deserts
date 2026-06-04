@@ -38,7 +38,7 @@ gene_deserts/
 │   ├── desert_gc_nonlinear.py       # non-linear GC-vs-z diagnostics (spline vs linear)
 │   ├── desert_trinuc_context.py     # trinucleotide context composition bias diagnostics
 │   ├── desert_background_selection.py # BGS proxy via edge-distance and recombination
-│   ├── desert_replication_timing.py # replication timing overlay (GM12878)
+│   ├── desert_replication_timing.py # replication timing overlay (RT_BG02, features-17)
 │   ├── desert_lad_overlap.py        # LAD occupancy/concordance across 12 cell types
 │   ├── desert_conserved_elements.py # phyloP conservation support for z spikes
 │   └── desert_sv_overlap.py         # common large SV overlap (gnomAD v4.1)
@@ -153,7 +153,7 @@ Key outputs: `results/gc_extrema_desert_flags.tsv` (all 633 deserts), `gc_extrem
 | `desert_gc_nonlinear.py` | Tests whether persistent GC-linked anomalies (e.g. GD588 class) are better explained by non-linear GC relationships than linear correction | `gc_nonlinear_desert_summary.tsv`, `gc_nonlinear_exemplar_{name}.png`, `gc_nonlinear_fleet_overview.png` |
 | `desert_trinuc_context.py` | Quantifies context-spectrum shifts (desert vs genome) and flags trinucleotide-composition bias in unadjusted expectations | `trinuc_context_desert_summary.tsv`, `trinuc_context_exemplar_{name}.png`, `trinuc_context_fleet_overview.png` |
 | `desert_background_selection.py` | B-value proxy analysis using edge-distance gradients + recombination interaction (no external B-map required) | `bgs_desert_summary.tsv`, `bgs_exemplar_{name}.png`, `bgs_fleet_overview.png` |
-| `desert_replication_timing.py` | Joins GM12878 replication timing and tests RT associations with z_adj/z_unadj/delta_z (including partial corr vs GC) | `replication_timing_desert_summary.tsv`, `replication_timing_exemplar_{name}.png`, `replication_timing_fleet_overview.png` |
+| `desert_replication_timing.py` | Joins per-window replication timing (`RT_BG02` from the features-17 table) and tests RT associations with z_adj/z_unadj/delta_z (including partial corr vs GC) | `replication_timing_desert_summary.tsv`, `replication_timing_exemplar_{name}.png`, `replication_timing_fleet_overview.png` |
 | `desert_lad_overlap.py` | Computes LAD occupancy across 12 LAD tracks and constitutive LAD effects on desert scores | `lad_desert_summary.tsv`, `lad_track_overlap_by_desert.tsv`, `lad_exemplar_{name}.png`, `lad_fleet_overview.png` |
 | `desert_conserved_elements.py` | Uses phyloP447way primate conservation to ask whether desert z spikes are conservation-backed | `conserved_elements_desert_summary.tsv`, `conserved_elements_exemplar_{name}.png`, `conserved_elements_fleet_overview.png` |
 | `desert_sv_overlap.py` | Tests overlap with common large SVs (INV/DEL/DUP/CPX/CNV) from gnomAD v4.1 | `sv_desert_summary.tsv`, `sv_flagged_deserts.tsv`, `sv_fleet_overview.png` |
@@ -233,7 +233,7 @@ Data files live in `data/` and are not tracked in this repository. All files are
 | `gencode.v39.annotation.gtf.gz` | [GENCODE v39](https://www.gencodegenes.org/human/release_39.html) | Gene annotations for GRCh38; used to map ncRNA positions into deserts |
 | `dnm01_10x_ft_logit_regularized_coef_z_3mer_context_flnk_1k-1M.txt` | gnomAD v3 (Gnocchi pipeline) | De novo mutation model coefficients |
 | `desert.ncz.exemplars.apr2026.txt` | This project | Coordinates of the 5 hand-curated exemplar gene deserts |
-| `GM12878_hg38_smoothed.txt` | [Koren Lab](https://www.thekorenlab.org/data) | Per-position replication timing values used in `desert_replication_timing.py` |
+| `genomic_features17_1kb.txt.gz` | gnomAD v3 (Gnocchi pipeline, extended feature set) | Per-1kb-window feature table including `RT_BG02` replication timing, used in `desert_replication_timing.py` |
 | `LADs/*.bed.gz` | [LAD atlas](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE155244) (12 tissues/cell types) | Cell-type-specific LAD intervals used to compute occupancy and constitutive LAD labels |
 | `gnomad.v4.1.sv.sites.bed.gz` | [gnomAD SV v4.1](https://gnomad.broadinstitute.org/downloads) | Structural variant catalog used for common large-SV desert-overlap analysis |
 | `phyloP447wayPrimates.txt.gz` | UCSC / Zoonomia (447-way primate phyloP summary) | Conservation-score summary blocks aggregated to 1 kb windows in `desert_conserved_elements.py` |
