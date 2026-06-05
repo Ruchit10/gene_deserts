@@ -114,23 +114,39 @@ fig.savefig(os.path.join(OUT, "desert_scatter_adj_vs_unadj.png"), dpi=150)
 plt.close(fig)
 print("  Saved desert_scatter_adj_vs_unadj.png")
 
-# ── Plot C: spatial profiles per desert ──────────────────────────────────────
-fig, axes = plt.subplots(5, 1, figsize=(12, 16))
-for ax, (name, (chrom, start, end, note)) in zip(axes, deserts.items()):
+# ── Plot C: spatial profiles — one figure per desert ─────────────────────────
+for name, (chrom, start, end, note) in deserts.items():
     sub = df[df["desert"] == name].sort_values("start")
     pos = (sub["start"] + sub["end"]) / 2
-    ax.plot(pos, sub["z_adj"], lw=0.6, alpha=0.7, label="adjusted")
-    ax.plot(pos, sub["z_unadj"], lw=0.6, alpha=0.7, label="unadjusted")
+
+    fig, axes = plt.subplots(2, 1, figsize=(14, 6), sharex=True,
+                             gridspec_kw={"height_ratios": [3, 1]})
+
+    ax = axes[0]
+    ax.plot(pos, sub["z_adj"],   lw=0.9, color="tab:blue",   label="z adjusted")
+    ax.plot(pos, sub["z_unadj"], lw=0.9, color="tab:orange", label="z unadjusted")
     ax.axhline(0, color="grey", lw=0.5, ls="--")
-    ax.set_title(f"{name}  {chrom}:{start:,}-{end:,}  ({note})", fontsize=10)
-    ax.legend(fontsize=8)
-    ax.set_ylabel("z-score")
+    ax.set_ylabel("Gnocchi z-score")
+    ax.set_title(f"{name}  {chrom}:{start:,}–{end:,}  ({note})", fontsize=11)
+    ax.legend(fontsize=9)
+
+    ax = axes[1]
+    delta = sub["delta_z"] if "delta_z" in sub.columns else sub["z_unadj"] - sub["z_adj"]
+    ax.fill_between(pos, delta, 0,
+                    where=(delta >= 0), color="tab:orange", alpha=0.4, label="Δz > 0")
+    ax.fill_between(pos, delta, 0,
+                    where=(delta < 0),  color="tab:blue",   alpha=0.4, label="Δz < 0")
+    ax.axhline(0, color="grey", lw=0.5, ls="--")
+    ax.set_ylabel("Δz (unadj − adj)")
+    ax.set_xlabel(f"{chrom} position")
     ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{x/1e6:.1f} Mb"))
-axes[-1].set_xlabel("Genomic position")
-fig.tight_layout()
-fig.savefig(os.path.join(OUT, "desert_spatial_profiles.png"), dpi=150)
-plt.close(fig)
-print("  Saved desert_spatial_profiles.png")
+    ax.legend(fontsize=8)
+
+    fig.tight_layout()
+    fig_path = os.path.join(OUT, f"desert_spatial_profile_{name}.png")
+    fig.savefig(fig_path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved {fig_path}")
 
 # ── Step 4: Genome-wide sanity check ────────────────────────────────────────
 print("\n=== Genome-wide sanity check ===")

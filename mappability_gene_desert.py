@@ -15,7 +15,7 @@ compromise Gnocchi score reliability.  Analysis at two resolutions:
 
 Outputs (all in results/):
   mappability_desert_summary.tsv
-  mappability_exemplar_profiles.png      (3 metrics × 5 exemplars)
+  mappability_exemplar_{name}.png        (2×2 panel per exemplar desert)
   mappability_fleet_distributions.png   (histograms across 633)
   mappability_fleet_vs_zscore.png        (scatter: mappability ↔ z-score)
   mappability_flagged_deserts.tsv        (deserts that fail any threshold)
@@ -138,55 +138,83 @@ def _flag_deserts(summary: pd.DataFrame) -> pd.DataFrame:
 
 # ── Plots ─────────────────────────────────────────────────────────────────────
 
-def _save_exemplar_profiles(df: pd.DataFrame, z_df: pd.DataFrame | None, out_path: str) -> None:
-    """4-row × 5-column grid: MQ, LCR, Segdup, z_adj (if available) per exemplar."""
-    n_rows = 4 if z_df is not None else 3
-    fig, axes = plt.subplots(n_rows, len(DESERT_ORDER), figsize=(4 * len(DESERT_ORDER), 3 * n_rows),
-                             sharey="row")
+def _save_exemplar_profiles(df: pd.DataFrame, z_df: pd.DataFrame | None, out_dir: str) -> None:
+    """2×2 panel per exemplar: MQ, LCR, Segdup (top row), z_adj/z_unadj (bottom-right)."""
+    fmt = ticker.FuncFormatter(lambda x, _: f"{x/1e6:.2f} Mb")
 
-    for col_idx, name in enumerate(DESERT_ORDER):
+    for name in DESERT_ORDER:
         chrom, start, end, note = DESERTS[name]
         sub = df[df["desert"] == name].sort_values("start").copy()
+
+        fig, axes = plt.subplots(2, 2, figsize=(13, 7), sharex=True)
+        fig.suptitle(
+            f"{name}  {chrom}:{start:,}–{end:,}  ({note})  — mappability diagnostics",
+            fontsize=11,
+        )
+
         if sub.empty:
-            for r in range(n_rows):
-                axes[r, col_idx].set_title(f"{name}\nno data")
+            for ax in axes.flat:
+                ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes)
+            fig.tight_layout(rect=(0, 0, 1, 0.95))
+            fig.savefig(os.path.join(out_dir, f"mappability_exemplar_{name}.png"), dpi=150)
+            plt.close(fig)
             continue
 
         pos = (sub["start"] + sub["end"]) / 2
 
-        fmt = ticker.FuncFormatter(lambda x, _: f"{x/1e6:.2f}")
+        # ── [0,0]: Mean mapping quality ───────────────────────────────────
+        ax = axes[0, 0]
+        ax.plot(pos, sub[MQ_COL], lw=0.8, color=METRIC_COLORS[MQ_COL], alpha=0.85)
+        ax.axhline(FLAG_THRESHOLDS[MQ_COL][1], color="grey", lw=0.8, ls="--",
+                   label=f"flag < {FLAG_THRESHOLDS[MQ_COL][1]}")
+        ax.set_ylabel(METRIC_LABELS[MQ_COL], fontsize=9)
+        ax.legend(fontsize=8)
+        ax.tick_params(labelsize=8)
 
-        for row_idx, col in enumerate(METRIC_COLS):
-            ax = axes[row_idx, col_idx]
-            color = METRIC_COLORS[col]
-            ax.plot(pos, sub[col], lw=0.7, color=color, alpha=0.85)
-            ax.axhline(FLAG_THRESHOLDS[col][1], color="grey", lw=0.6, ls="--", alpha=0.7)
-            if row_idx == 0:
-                ax.set_title(f"{name}\n({note})", fontsize=9)
-            if col_idx == 0:
-                ax.set_ylabel(METRIC_LABELS[col], fontsize=8)
-            ax.xaxis.set_major_formatter(fmt)
-            ax.tick_params(labelsize=7)
+        # ── [0,1]: LCR fraction ───────────────────────────────────────────
+        ax = axes[0, 1]
+        ax.plot(pos, sub[LCR_COL], lw=0.8, color=METRIC_COLORS[LCR_COL], alpha=0.85)
+        ax.axhline(FLAG_THRESHOLDS[LCR_COL][1], color="grey", lw=0.8, ls="--",
+                   label=f"flag > {FLAG_THRESHOLDS[LCR_COL][1]}")
+        ax.set_ylabel(METRIC_LABELS[LCR_COL], fontsize=9)
+        ax.legend(fontsize=8)
+        ax.tick_params(labelsize=8)
 
+        # ── [1,0]: Segdup fraction ────────────────────────────────────────
+        ax = axes[1, 0]
+        ax.plot(pos, sub[SEGDUP_COL], lw=0.8, color=METRIC_COLORS[SEGDUP_COL], alpha=0.85)
+        ax.axhline(FLAG_THRESHOLDS[SEGDUP_COL][1], color="grey", lw=0.8, ls="--",
+                   label=f"flag > {FLAG_THRESHOLDS[SEGDUP_COL][1]}")
+        ax.set_ylabel(METRIC_LABELS[SEGDUP_COL], fontsize=9)
+        ax.set_xlabel("Position", fontsize=9)
+        ax.xaxis.set_major_formatter(fmt)
+        ax.legend(fontsize=8)
+        ax.tick_params(labelsize=8)
+
+        # ── [1,1]: Gnocchi z_adj / z_unadj ───────────────────────────────
+        ax = axes[1, 1]
         if z_df is not None:
             sub_z = sub.merge(z_df, on="element_id", how="left")
             pos_z = (sub_z["start"] + sub_z["end"]) / 2
-            ax = axes[3, col_idx]
-            ax.plot(pos_z, sub_z["z_adj"], lw=0.7, color="tab:blue", alpha=0.8, label="z_adj")
-            ax.plot(pos_z, sub_z["z_unadj"], lw=0.7, color="tab:orange", alpha=0.8, label="z_unadj")
+            ax.plot(pos_z, sub_z["z_adj"], lw=0.8, color="tab:blue",
+                    alpha=0.85, label="z adjusted")
+            ax.plot(pos_z, sub_z["z_unadj"], lw=0.8, color="tab:orange",
+                    alpha=0.85, label="z unadjusted")
             ax.axhline(0, color="grey", lw=0.5, ls="--")
-            if col_idx == 0:
-                ax.set_ylabel("Gnocchi z", fontsize=8)
-                ax.legend(fontsize=7)
-            ax.xaxis.set_major_formatter(fmt)
-            ax.tick_params(labelsize=7)
+            ax.set_ylabel("Gnocchi z-score", fontsize=9)
+            ax.legend(fontsize=8)
+        else:
+            ax.text(0.5, 0.5, "z-scores unavailable",
+                    ha="center", va="center", transform=ax.transAxes, fontsize=9)
+        ax.set_xlabel("Position", fontsize=9)
+        ax.xaxis.set_major_formatter(fmt)
+        ax.tick_params(labelsize=8)
 
-        axes[n_rows - 1, col_idx].set_xlabel("Position (Mb)", fontsize=8)
-
-    fig.suptitle("Mappability metrics and Gnocchi z-scores across exemplar deserts", fontsize=12)
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        out_path = os.path.join(out_dir, f"mappability_exemplar_{name}.png")
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+        print(f"  wrote {out_path}")
 
 
 def _save_fleet_distributions(summary: pd.DataFrame, out_path: str) -> None:
@@ -321,11 +349,7 @@ def main() -> None:
 
     print("Generating visualizations ...")
 
-    _save_exemplar_profiles(
-        in_desert, z_df,
-        os.path.join(RESULTS_DIR, "mappability_exemplar_profiles.png"),
-    )
-    print("  wrote mappability_exemplar_profiles.png")
+    _save_exemplar_profiles(in_desert, z_df, RESULTS_DIR)
 
     _save_fleet_distributions(
         summary,
