@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 
@@ -26,6 +27,7 @@ from utils.desert_utils import (
 )
 
 GC_COL = "GC_content_1k"
+TOP_RT_N = 10  # number of top RT-informative deserts to plot spatially
 
 
 def _safe_corr(a: pd.Series, b: pd.Series) -> float:
@@ -162,6 +164,111 @@ def _plot_fleet(summary: pd.DataFrame, out_path: str) -> None:
     plt.close(fig)
 
 
+def _plot_top_rt_spatial(
+    summary: pd.DataFrame,
+    in_deserts: pd.DataFrame,
+    n_top: int,
+    out_path: str,
+) -> None:
+    """Compound spatial figure for the top N deserts ranked by RT R² increment.
+
+    Each desert occupies one row of 3 stacked panels sharing the x-axis:
+      col 0 – z_adj (blue) and z_unadj (orange)
+      col 1 – RT_BG02 replication timing
+      col 2 – delta_z (z_unadj − z_adj)
+    Per-desert stats (ΔR², r(RT,z_adj), partial corr) are annotated on col 2.
+    Exemplar deserts are labelled with a star in the row ylabel.
+    """
+    top = (
+        summary.dropna(subset=["r2_increment_rt_over_gc"])
+        .nlargest(n_top, "r2_increment_rt_over_gc")
+        .reset_index(drop=True)
+    )
+    if top.empty:
+        return
+
+    n = len(top)
+    _mb = ticker.FuncFormatter(lambda x, _: f"{x:.1f}")
+
+    fig, axes = plt.subplots(n, 3, figsize=(16, 3.2 * n), squeeze=False)
+
+    for row_idx, row_data in top.iterrows():
+        desert_id   = str(row_data["desert_id"])
+        r2_inc      = float(row_data["r2_increment_rt_over_gc"])
+        corr_rt_z   = row_data.get("corr_rt_z_adj", np.nan)
+        partial_r   = row_data.get("partial_corr_rt_zadj_given_gc", np.nan)
+        is_exemplar = desert_id in set(DESERT_ORDER)
+
+        sub = in_deserts[in_deserts["desert_id"] == desert_id].sort_values("start")
+        pos_mb = (sub["start"] + sub["end"]) / 2 / 1e6
+
+        row_label = f"{'★ ' if is_exemplar else ''}{desert_id}"
+
+        # ── col 0: z_adj / z_unadj ───────────────────────────────────────
+        ax = axes[row_idx, 0]
+        if not sub.empty:
+            ax.plot(pos_mb, sub["z_adj"],   lw=0.85, color="tab:blue",   label="z_adj")
+            ax.plot(pos_mb, sub["z_unadj"], lw=0.75, color="tab:orange", alpha=0.75, label="z_unadj")
+            ax.axhline(0, color="grey", lw=0.5, ls="--")
+        ax.set_ylabel(row_label, fontsize=9, labelpad=4)
+        if row_idx == 0:
+            ax.set_title("z_adj / z_unadj", fontsize=10)
+            ax.legend(fontsize=7, loc="upper right")
+        ax.xaxis.set_major_formatter(_mb)
+        ax.tick_params(axis="x", labelsize=7)
+        if row_idx < n - 1:
+            plt.setp(ax.get_xticklabels(), visible=False)
+
+        # ── col 1: RT profile ─────────────────────────────────────────────
+        ax = axes[row_idx, 1]
+        if not sub.empty and sub["rt_value"].notna().any():
+            ax.plot(pos_mb, sub["rt_value"], lw=0.85, color="tab:green")
+        ax.set_ylabel("RT_BG02", fontsize=8, color="tab:green")
+        ax.tick_params(axis="y", labelcolor="tab:green")
+        if row_idx == 0:
+            ax.set_title("Replication timing (RT_BG02)", fontsize=10)
+        ax.xaxis.set_major_formatter(_mb)
+        ax.tick_params(axis="x", labelsize=7)
+        if row_idx < n - 1:
+            plt.setp(ax.get_xticklabels(), visible=False)
+
+        # ── col 2: delta_z + stats annotation ────────────────────────────
+        ax = axes[row_idx, 2]
+        if not sub.empty and "delta_z" in sub.columns:
+            ax.plot(pos_mb, sub["delta_z"], lw=0.85, color="tab:purple")
+            ax.axhline(0, color="grey", lw=0.5, ls="--")
+        if row_idx == 0:
+            ax.set_title("delta_z  (z_unadj − z_adj)", fontsize=10)
+        stats_txt = (
+            f"ΔR² = {r2_inc:.3f}\n"
+            f"r(RT, z_adj) = {corr_rt_z:+.2f}\n"
+            f"partial r | GC = {partial_r:+.2f}"
+        )
+        ax.text(
+            0.02, 0.97, stats_txt,
+            transform=ax.transAxes, fontsize=7,
+            va="top", ha="left",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="wheat", alpha=0.7),
+        )
+        ax.xaxis.set_major_formatter(_mb)
+        ax.tick_params(axis="x", labelsize=7)
+        if row_idx < n - 1:
+            plt.setp(ax.get_xticklabels(), visible=False)
+
+    # Shared x-label on the bottom row only
+    for col in range(3):
+        axes[n - 1, col].set_xlabel("Position (Mb)", fontsize=9)
+
+    fig.suptitle(
+        f"Top {n} RT-informative deserts — spatial profiles  "
+        f"(ranked by R² increment from adding RT to GC model)",
+        fontsize=12,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 def main() -> None:
     print("Loading merged Gnocchi windows ...")
     gn = load_gnocchi(usecols=["element_id", "chrom", "start", "end", "z_adj", "z_unadj", "delta_z"])
@@ -226,6 +333,12 @@ def main() -> None:
     fleet_png = os.path.join(RESULTS_DIR, "replication_timing_fleet_overview.png")
     _plot_fleet(summary, fleet_png)
     print(f"  wrote {fleet_png}")
+
+    print(f"Generating spatial profiles for top {TOP_RT_N} RT-informative deserts ...")
+    top_spatial_png = os.path.join(RESULTS_DIR, "replication_timing_top_rt_spatial.png")
+    _plot_top_rt_spatial(summary, in_deserts, TOP_RT_N, top_spatial_png)
+    print(f"  wrote {top_spatial_png}")
+
     print("\nDone.")
 
 

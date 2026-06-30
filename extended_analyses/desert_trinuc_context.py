@@ -108,9 +108,6 @@ def _plot_exemplar(
         (full["p_desert"] + 1e-12) / (full["p_genome"] + 1e-12)
     )
     full["abs_shift"] = full["prop_shift"].abs()
-    # Central base: works for standard 3-mers (e.g. "ACG") and longer strings.
-    full["central_base"] = full["context"].str[1].where(full["context"].str.len() >= 3,
-                                                         full["context"].str[0])
 
     stat = desert_stats[desert_stats["desert_id"] == desert_id].iloc[0]
     oe_val = float(stat["oe_unadj_desert"])
@@ -118,10 +115,10 @@ def _plot_exemplar(
     chi2_stat_val = float(stat["chi2_stat"])
     chi2_p = float(stat["chi2_pvalue"])
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
 
-    # ── [0,0]: Composition shift scatter (all contexts) ──────────────────
-    ax = axes[0, 0]
+    # ── [0]: Composition shift scatter (all contexts) ─────────────────────
+    ax = axes[0]
     ax.scatter(full["p_genome"], full["p_desert"], s=18, alpha=0.5,
                color="tab:blue", linewidths=0)
     lim = max(float(full["p_genome"].max()), float(full["p_desert"].max())) * 1.05
@@ -135,8 +132,8 @@ def _plot_exemplar(
     ax.set_ylabel(f"{desert_id} context proportion")
     ax.set_title(f"Composition shift  (O/E unadj = {oe_val:.3f})")
 
-    # ── [0,1]: Per-context KL contribution (top 15) ──────────────────────
-    ax = axes[0, 1]
+    # ── [1]: Per-context KL contribution (top 15) ────────────────────────
+    ax = axes[1]
     top_kl = full.reindex(full["kl_contrib"].abs().nlargest(15).index).sort_values("kl_contrib")
     bar_colors = ["tab:red" if v < 0 else "tab:blue" for v in top_kl["kl_contrib"]]
     ax.barh(top_kl["context"], top_kl["kl_contrib"], color=bar_colors, alpha=0.85)
@@ -145,8 +142,8 @@ def _plot_exemplar(
     ax.set_title(f"Per-context KL contribution  (total KL = {kl_val:.4f})")
     ax.tick_params(axis="y", labelsize=8)
 
-    # ── [1,0]: Fleet KL histogram — where does this desert sit? ──────────
-    ax = axes[1, 0]
+    # ── [2]: Fleet KL histogram — where does this desert sit? ────────────
+    ax = axes[2]
     fleet_kl = desert_stats["kl_desert_vs_genome"].dropna()
     pct = float((fleet_kl < kl_val).mean()) * 100
     ax.hist(fleet_kl, bins=40, color="tab:gray", edgecolor="white", alpha=0.75)
@@ -155,22 +152,6 @@ def _plot_exemplar(
     ax.set_xlabel("KL divergence (desert || genome)")
     ax.set_ylabel("Number of deserts")
     ax.set_title(f"Divergence in fleet context  ($\\chi^2$ p = {chi2_p:.2e})")
-    ax.legend(fontsize=8)
-
-    # ── [1,1]: Composition by central base ───────────────────────────────
-    ax = axes[1, 1]
-    base_grp = (full.groupby("central_base", sort=True)[["p_desert", "p_genome"]]
-                .sum().reset_index())
-    x = np.arange(len(base_grp))
-    w = 0.35
-    ax.bar(x - w / 2, base_grp["p_desert"], width=w,
-           label=desert_id, color="tab:blue", alpha=0.85)
-    ax.bar(x + w / 2, base_grp["p_genome"], width=w,
-           label="Genome", color="tab:gray", alpha=0.85)
-    ax.set_xticks(x)
-    ax.set_xticklabels(base_grp["central_base"], fontsize=11)
-    ax.set_ylabel("Summed context proportion")
-    ax.set_title("Composition by central trinucleotide base")
     ax.legend(fontsize=8)
 
     fig.suptitle(

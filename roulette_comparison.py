@@ -1,11 +1,31 @@
 #!/usr/bin/env python3
-"""Roulette-vs-Gnocchi comparison using direct Roulette rates (no calibration).
+"""Roulette-vs-Gnocchi comparison using Roulette aggregated EXPECTED counts.
 
-Implements four lenses on the gene-desert window subset:
-  A) O/P vs mu regression residuals (primary) + O/mu summary (supplementary)
-  B) Mutation-model concordance (mu_roulette vs expected_unadj)
-  C) Rank-based concordance (mu rank vs expected_unadj rank)
-  D) Poisson deviance residuals with log(mu) offset ("roulette z")
+Roulette now provides per-1kb *expected* variant counts (`exp`), aggregated
+from the Roulette relative mutation-rate model and calibrated to gnomAD v3,
+plus `n_variants` (a coverage proxy: max 3000 = 1kb x 3 substitutions; lower
+means Roulette data was missing for some possible substitutions).
+
+Because actual expected counts are now available, the earlier "mu as a proxy
+for expected" lenses (O/P~mu regression, rank concordance, Poisson offset) are
+obsolete and removed. Instead we put Roulette expected on the same footing as
+Gnocchi expected and recompute a Gnocchi-style z-score:
+
+  1. Diploid -> haploid: Roulette rates are diploid, gnomAD is haploid, so we
+     divide the Roulette per-genome expectation appropriately. Empirically the
+     raw Roulette `exp` is ~0.55x the gnomAD expected; a factor of 2 (diploid)
+     combined with the accessibility correction below lands it on the observed
+     scale without any fitted fudge factor.
+  2. Accessibility / coverage: Gnocchi counts observed variants over its QC
+     *accessible* sites (`possible`, ~2670 +/- 490 of 3000), while Roulette
+     `exp` is summed over `n_variants` covered substitutions (~3000). We convert
+     Roulette to a per-covered-site rate and re-expand onto gnomAD's accessible
+     count: exp_per_site = exp / n_variants; then multiply by `possible`.
+
+  exp_roulette = DIPLOID_FACTOR * (exp / n_variants) * possible
+
+Then z_roulette uses the same signed-chi formula as Gnocchi, and we compare
+desert anomalies across the two mutation models.
 """
 
 from __future__ import annotations
@@ -17,7 +37,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
-from scipy.stats import pearsonr, spearmanr
+from scipy.stats import pearsonr
 
 from utils.desert_utils import (
     DESERT_ORDER,
@@ -31,38 +51,34 @@ from utils.desert_utils import (
 )
 
 
-ROULETTE_PATH = os.path.join("data", "roulette_gene_deserts_mu.tsv.bgz")
+ROULETTE_PATH = os.path.join("data", "roulette_gd_relative_mu_agg_1kb.tsv.bgz")
+
+# Roulette enumerates 3 alternate alleles per base, so a fully-covered 1kb
+# window has 1000 * 3 = 3000 possible substitutions.
+MAX_COVERAGE = 3000
+
+# Roulette rates are diploid; gnomAD/Gnocchi work on a haploid basis.
+DIPLOID_FACTOR = 2.0
 
 
-def _safe_corr(x: pd.Series, y: pd.Series) -> tuple[float, float]:
-    mask = np.isfinite(x) & np.isfinite(y)
-    if mask.sum() < 3:
-        return (np.nan, np.nan)
-    return pearsonr(x[mask], y[mask])
-
-
-def _safe_spearman(x: pd.Series, y: pd.Series) -> tuple[float, float]:
-    mask = np.isfinite(x) & np.isfinite(y)
-    if mask.sum() < 3:
-        return (np.nan, np.nan)
-    return spearmanr(x[mask], y[mask])
-
-
-def _deviance_residual(obs: np.ndarray, fit: np.ndarray) -> np.ndarray:
-    """Poisson deviance residuals."""
+def compute_gnocchi_z(obs: np.ndarray, exp: np.ndarray) -> np.ndarray:
+    """Signed chi deviation, identical to the Gnocchi z definition."""
     obs = np.asarray(obs, dtype=float)
-    fit = np.asarray(fit, dtype=float)
-    eps = 1e-12
-    fit = np.clip(fit, eps, None)
-    term = np.where(obs > 0, obs * np.log(obs / fit), 0.0)
-    dev = 2.0 * (term - (obs - fit))
-    dev = np.clip(dev, 0.0, None)
-    return np.sign(obs - fit) * np.sqrt(dev)
+    exp = np.asarray(exp, dtype=float)
+    exp = np.clip(exp, 1e-12, None)
+    chi2 = (obs - exp) ** 2 / exp
+    return np.where(obs < exp, np.sqrt(chi2), -np.sqrt(chi2))
+
+
+def _safe_corr(x: pd.Series, y: pd.Series) -> float:
+    mask = np.isfinite(x) & np.isfinite(y)
+    if mask.sum() < 3:
+        return float("nan")
+    return float(pearsonr(x[mask], y[mask])[0])
 
 
 def _category(row: pd.Series) -> str:
-    sign_flip = np.sign(row["mean_z_adj"]) != np.sign(row["mean_z_unadj"])
-    if sign_flip:
+    if np.sign(row["mean_z_adj"]) != np.sign(row["mean_z_unadj"]):
         return "Sign-flip"
     if row["mean_delta_z"] < -1.0:
         return "Inflated by adjustment"
@@ -83,155 +99,78 @@ def _chrom_sort_key(chrom: str) -> tuple[int, Any]:
     return (1, value)
 
 
-def _save_model_concordance(df: pd.DataFrame, out_path: str) -> None:
-    pr, _ = _safe_corr(df["mu"], df["expected_unadj"])
-    sr, _ = _safe_spearman(df["mu"], df["expected_unadj"])
-
-    rng = np.random.default_rng(0)
-    bg = df.sample(min(120_000, len(df)), random_state=0)
-
-    fig, ax = plt.subplots(figsize=(8, 7))
-    ax.scatter(bg["mu"], bg["expected_unadj"], s=2, alpha=0.12, color="lightgray", label="desert windows")
-
-    palette = desert_palette()
-    for desert in DESERT_ORDER:
-        sub = df[df["desert_exemplar"] == desert]
-        ax.scatter(sub["mu"], sub["expected_unadj"], s=10, alpha=0.6, color=palette[desert], label=desert)
-
-    ax.set_xlabel("Roulette mu")
-    ax.set_ylabel("Gnocchi expected_unadj")
-    ax.set_title(f"Roulette vs gnomAD mutation model concordance\nPearson r={pr:.3f}, Spearman rho={sr:.3f}")
-    ax.legend(fontsize=8, markerscale=2, loc="best")
-    ax.xaxis.set_major_formatter(ticker.ScalarFormatter(useMathText=True))
-    ax.yaxis.set_major_formatter(ticker.ScalarFormatter(useMathText=True))
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-
-
-def _save_op_vs_mu(df: pd.DataFrame, beta0: float, beta1: float, out_path: str) -> None:
-    pr, _ = _safe_corr(df["mu"], df["op"])
-    sr, _ = _safe_spearman(df["mu"], df["op"])
-    bg = df.sample(min(120_000, len(df)), random_state=1)
-
-    fig, ax = plt.subplots(figsize=(8, 7))
-    ax.scatter(bg["mu"], bg["op"], s=2, alpha=0.12, color="lightgray", label="desert windows")
-    palette = desert_palette()
-    for desert in DESERT_ORDER:
-        sub = df[df["desert_exemplar"] == desert]
-        ax.scatter(sub["mu"], sub["op"], s=10, alpha=0.6, color=palette[desert], label=desert)
-
-    xs = np.linspace(float(df["mu"].min()), float(df["mu"].max()), 200)
-    ys = beta0 + beta1 * xs
-    ax.plot(xs, ys, color="black", lw=1.5, ls="--", label="O/P ~ mu fit")
-
-    ax.set_xlabel("Roulette mu")
-    ax.set_ylabel("Observed / possible (O/P)")
-    ax.set_title(f"O/P vs Roulette mu\nPearson r={pr:.3f}, Spearman rho={sr:.3f}")
-    ax.legend(fontsize=8, markerscale=2, loc="best")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-
-
-def _save_omu_boxplots(df: pd.DataFrame, out_path: str) -> pd.DataFrame:
-    data = [df["omu"].dropna().values]
-    labels = ["all_desert_windows"]
-    for desert in DESERT_ORDER:
-        data.append(df.loc[df["desert_exemplar"] == desert, "omu"].dropna().values)
-        labels.append(desert)
-
-    fig, ax = plt.subplots(figsize=(11, 5))
-    bp = ax.boxplot(data, tick_labels=labels, showfliers=False, patch_artist=True)
-    palette = desert_palette()
-    for i, patch in enumerate(bp["boxes"]):
-        if i == 0:
-            patch.set_facecolor("lightgray")
-        else:
-            patch.set_facecolor(palette[labels[i]])
-        patch.set_alpha(0.6)
-    ax.set_ylabel("O / mu")
-    ax.set_title("Supplementary O/mu distributions")
-    ax.tick_params(axis="x", rotation=30)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-
-    overall_mean_omu = float(df["omu"].mean())
-    rows = []
-    for desert in DESERT_ORDER:
-        sub = df[df["desert_exemplar"] == desert]
-        rows.append(
-            {
-                "desert_id": desert,
-                "n_windows": int(len(sub)),
-                "mean_omu": float(sub["omu"].mean()),
-                "median_omu": float(sub["omu"].median()),
-                "omu_percentile": float((sub["omu"].mean() > df["omu"]).mean() * 100.0),
-                "mean_op": float(sub["op"].mean()),
-                "median_op": float(sub["op"].median()),
-                "mean_mu": float(sub["mu"].mean()),
-                "mean_op_residual": float(sub["op_residual"].mean()),
-                "median_op_residual": float(sub["op_residual"].median()),
-                "mean_z_adj": float(sub["z_adj"].mean()),
-                "median_z_adj": float(sub["z_adj"].median()),
-                "mean_z_unadj": float(sub["z_unadj"].mean()),
-                "median_z_unadj": float(sub["z_unadj"].median()),
-                "mean_z_roulette_dev": float(sub["z_roulette_dev"].mean()),
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def _save_rank_concordance(summary: pd.DataFrame, out_path: str) -> None:
-    fig, ax = plt.subplots(figsize=(8, 7))
-    ax.scatter(summary["mean_rank_mu"], summary["mean_rank_exp_unadj"], s=28, alpha=0.7, color="tab:gray")
-    ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.6)
-    for _, row in summary[summary["desert_id"].isin(DESERT_ORDER)].iterrows():
-        ax.annotate(row["desert_id"], (row["mean_rank_mu"], row["mean_rank_exp_unadj"]), xytext=(4, 4), textcoords="offset points", fontsize=8)
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.set_xlabel("Mean mu percentile rank")
-    ax.set_ylabel("Mean expected_unadj percentile rank")
-    ax.set_title("Rank-based model concordance (per desert)")
-    ax.set_aspect("equal")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-
-
-def _save_glm_scatter(df: pd.DataFrame, out_path: str) -> None:
-    bg = df.sample(min(120_000, len(df)), random_state=3)
-    pr, _ = _safe_corr(df["z_roulette_dev"], df["z_unadj"])
-
-    fig, ax = plt.subplots(figsize=(8, 7))
-    ax.scatter(bg["z_unadj"], bg["z_roulette_dev"], s=2, alpha=0.12, color="lightgray", label="desert windows")
-    palette = desert_palette()
-    for desert in DESERT_ORDER:
-        sub = df[df["desert_exemplar"] == desert]
-        ax.scatter(sub["z_unadj"], sub["z_roulette_dev"], s=10, alpha=0.6, color=palette[desert], label=desert)
-
-    lo = float(np.nanpercentile(df["z_unadj"], 0.5))
-    hi = float(np.nanpercentile(df["z_unadj"], 99.5))
-    ax.plot([lo, hi], [lo, hi], "k--", lw=1, alpha=0.6)
-    ax.set_xlabel("z_unadj")
-    ax.set_ylabel("z_roulette_dev")
-    ax.set_title(f"Roulette deviance residuals vs z_unadj\nPearson r={pr:.3f}")
-    ax.legend(fontsize=8, markerscale=2, loc="best")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-
-
-def _save_glm_distributions(df: pd.DataFrame, out_path: str) -> None:
-    fig, ax = plt.subplots(figsize=(8, 4))
-    bins = np.linspace(-10, 10, 201)
-    ax.hist(df["z_unadj"].dropna(), bins=bins, alpha=0.5, density=True, label="z_unadj")
-    ax.hist(df["z_roulette_dev"].dropna(), bins=bins, alpha=0.5, density=True, label="z_roulette_dev")
-    ax.set_xlabel("Score")
+# ── Plots ────────────────────────────────────────────────────────────────────
+def _save_zscore_distributions(df: pd.DataFrame, out_path: str) -> None:
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    bins = np.linspace(-10, 10, 161)
+    ax.hist(df["z_adj"].dropna(), bins=bins, density=True, histtype="step", lw=1.4, color="tab:blue", label="z_adj (gnomAD, adjusted)")
+    ax.hist(df["z_unadj"].dropna(), bins=bins, density=True, histtype="step", lw=1.4, color="tab:orange", label="z_unadj (gnomAD, unadjusted)")
+    ax.hist(df["z_roulette"].dropna(), bins=bins, density=True, histtype="step", lw=1.4, color="tab:red", label="z_roulette")
+    ax.axvline(0, color="grey", lw=0.5, ls="--")
+    ax.set_xlabel("z-score")
     ax.set_ylabel("density")
-    ax.set_title("Distribution overlay: z_unadj vs z_roulette_dev")
-    ax.legend()
+    ax.set_title("Desert-window z-score distributions across mutation models")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def _save_scatter_vs_gnocchi(df: pd.DataFrame, out_path: str) -> None:
+    bg = df.sample(min(120_000, len(df)), random_state=0)
+    palette = desert_palette()
+    fig, axes = plt.subplots(1, 2, figsize=(14, 7))
+    specs = [("z_unadj", "z_unadj (gnomAD, unadjusted)"), ("z_adj", "z_adj (gnomAD, adjusted)")]
+    for ax, (col, label) in zip(axes, specs):
+        r = _safe_corr(df["z_roulette"], df[col])
+        ax.scatter(bg[col], bg["z_roulette"], s=2, alpha=0.12, color="lightgray", label="desert windows")
+        for desert in DESERT_ORDER:
+            sub = df[df["desert_exemplar"] == desert]
+            ax.scatter(sub[col], sub["z_roulette"], s=10, alpha=0.6, color=palette[desert], label=desert)
+        lo = float(np.nanpercentile(df[col], 0.5))
+        hi = float(np.nanpercentile(df[col], 99.5))
+        ax.plot([lo, hi], [lo, hi], "k--", lw=1, alpha=0.6)
+        ax.set_xlabel(label)
+        ax.set_ylabel("z_roulette")
+        ax.set_title(f"z_roulette vs {col}  (Pearson r={r:.3f})")
+        ax.legend(fontsize=7, markerscale=2, loc="best")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def _save_oe_boxplots(df: pd.DataFrame, out_path: str) -> None:
+    fig, ax = plt.subplots(figsize=(11, 5))
+    groups = ["all_desert_windows"] + DESERT_ORDER
+    palette = desert_palette()
+    width = 0.27
+    offsets = {"oe_adj": -width, "oe_unadj": 0.0, "oe_roulette": width}
+    colors = {"oe_adj": "tab:blue", "oe_unadj": "tab:orange", "oe_roulette": "tab:red"}
+    positions = np.arange(len(groups))
+    for col, off in offsets.items():
+        data = [df[col].dropna().values]
+        for desert in DESERT_ORDER:
+            data.append(df.loc[df["desert_exemplar"] == desert, col].dropna().values)
+        bp = ax.boxplot(
+            data,
+            positions=positions + off,
+            widths=width * 0.9,
+            showfliers=False,
+            patch_artist=True,
+        )
+        for patch in bp["boxes"]:
+            patch.set_facecolor(colors[col])
+            patch.set_alpha(0.55)
+        for med in bp["medians"]:
+            med.set_color("black")
+    ax.axhline(1.0, color="grey", lw=0.7, ls="--")
+    ax.set_xticks(positions)
+    ax.set_xticklabels(groups, rotation=20, ha="right")
+    ax.set_ylabel("Observed / Expected")
+    ax.set_ylim(0, 2.0)
+    handles = [plt.Line2D([0], [0], color=colors[c], lw=6, alpha=0.55) for c in colors]
+    ax.legend(handles, ["O/E adjusted", "O/E unadjusted", "O/E roulette"], fontsize=8)
+    ax.set_title("O/E by mutation model (deserts vs all-desert background)")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -240,35 +179,36 @@ def _save_glm_distributions(df: pd.DataFrame, out_path: str) -> None:
 def _save_spatial_profiles(df: pd.DataFrame) -> None:
     for name, (chrom, start, end, note) in DESERTS.items():
         sub = df[df["desert_exemplar"] == name].sort_values("start")
+        if sub.empty:
+            continue
         pos = (sub["start"] + sub["end"]) / 2
         fig, axes = plt.subplots(
-            3,
-            1,
-            figsize=(14, 8),
-            sharex=True,
-            gridspec_kw={"height_ratios": [2.0, 1.0, 1.0]},
+            3, 1, figsize=(14, 8), sharex=True,
+            gridspec_kw={"height_ratios": [2.2, 1.2, 0.9]},
         )
 
         ax = axes[0]
         ax.plot(pos, sub["z_adj"], lw=0.9, color="tab:blue", label="z_adj")
         ax.plot(pos, sub["z_unadj"], lw=0.9, color="tab:orange", label="z_unadj")
+        ax.plot(pos, sub["z_roulette"], lw=0.9, color="tab:red", label="z_roulette")
         ax.axhline(0, color="grey", lw=0.5, ls="--")
-        ax.set_ylabel("Gnocchi z")
-        ax.set_title(f"{name}  {chrom}:{start:,}–{end:,}  ({note})")
-        ax.legend(fontsize=8)
+        ax.set_ylabel("z-score")
+        ax.set_title(f"{name}  {chrom}:{start:,}-{end:,}  ({note})")
+        ax.legend(fontsize=8, ncol=3)
 
         ax = axes[1]
-        ax.plot(pos, sub["op_residual"], lw=0.9, color="tab:green", label="O/P residual")
-        ax.axhline(0, color="grey", lw=0.5, ls="--")
-        ax.set_ylabel("O/P residual")
-        ax.legend(fontsize=8)
+        ax.plot(pos, sub["oe_unadj"], lw=0.9, color="tab:orange", label="O/E unadjusted")
+        ax.plot(pos, sub["oe_roulette"], lw=0.9, color="tab:red", label="O/E roulette")
+        ax.axhline(1.0, color="grey", lw=0.5, ls="--")
+        ax.set_ylabel("O/E")
+        ax.legend(fontsize=8, ncol=2)
 
         ax = axes[2]
-        ax.plot(pos, sub["z_roulette_dev"], lw=0.9, color="tab:red", label="z_roulette_dev")
-        ax.axhline(0, color="grey", lw=0.5, ls="--")
-        ax.set_ylabel("Roulette dev")
+        ax.fill_between(pos, sub["coverage"], 0, color="tab:gray", alpha=0.5, step="mid")
+        ax.axhline(1.0, color="grey", lw=0.5, ls="--")
+        ax.set_ylim(0, 1.05)
+        ax.set_ylabel("Roulette\ncoverage")
         ax.set_xlabel(f"{chrom} position")
-        ax.legend(fontsize=8)
         ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{x/1e6:.1f} Mb"))
 
         fig.tight_layout()
@@ -286,193 +226,184 @@ def _save_fleet_scatter(summary: pd.DataFrame, out_path: str) -> None:
     }
     fig, ax = plt.subplots(figsize=(8, 7))
     for cat, sub in summary.groupby("category"):
-        ax.scatter(
-            sub["mean_z_unadj"],
-            sub["mean_z_roulette_dev"],
-            s=30,
-            alpha=0.7,
-            color=colors.get(cat, "tab:gray"),
-            label=f"{cat} (n={len(sub)})",
-        )
-    lo = min(summary["mean_z_unadj"].min(), summary["mean_z_roulette_dev"].min()) - 0.5
-    hi = max(summary["mean_z_unadj"].max(), summary["mean_z_roulette_dev"].max()) + 0.5
+        ax.scatter(sub["mean_z_unadj"], sub["mean_z_roulette"], s=30, alpha=0.7,
+                   color=colors.get(cat, "tab:gray"), label=f"{cat} (n={len(sub)})")
+    lo = min(summary["mean_z_unadj"].min(), summary["mean_z_roulette"].min()) - 0.5
+    hi = max(summary["mean_z_unadj"].max(), summary["mean_z_roulette"].max()) + 0.5
     ax.plot([lo, hi], [lo, hi], "k--", lw=1, alpha=0.6)
     for _, row in summary[summary["desert_id"].isin(DESERT_ORDER)].iterrows():
-        ax.annotate(row["desert_id"], (row["mean_z_unadj"], row["mean_z_roulette_dev"]), xytext=(4, 4), textcoords="offset points", fontsize=8)
-    ax.set_xlabel("Mean z_unadj")
-    ax.set_ylabel("Mean z_roulette_dev")
-    ax.set_title("Fleet concordance: Roulette deviance vs z_unadj")
+        ax.annotate(row["desert_id"], (row["mean_z_unadj"], row["mean_z_roulette"]),
+                    xytext=(4, 4), textcoords="offset points", fontsize=8)
+    ax.set_xlabel("Mean z_unadj (gnomAD)")
+    ax.set_ylabel("Mean z_roulette")
+    ax.set_title("Fleet concordance: Roulette vs gnomAD constraint")
     ax.legend(fontsize=8, loc="best")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
 
-def _save_fleet_op_residual(summary: pd.DataFrame, out_path: str) -> None:
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(summary["mean_z_adj"], summary["mean_op_residual"], s=28, alpha=0.7, color="tab:gray")
-    ax.axhline(0, color="black", lw=0.8)
-    for _, row in summary[summary["desert_id"].isin(DESERT_ORDER)].iterrows():
-        ax.annotate(row["desert_id"], (row["mean_z_adj"], row["mean_op_residual"]), xytext=(4, 4), textcoords="offset points", fontsize=8)
-    ax.set_xlabel("Mean z_adj")
-    ax.set_ylabel("Mean O/P regression residual")
-    ax.set_title("Fleet O/P residual vs adjusted Gnocchi score")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-
-
+# ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> None:
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
-    print("Loading Roulette per-window rates ...")
+    print("Loading Roulette aggregated expected counts ...")
     roulette = pd.read_csv(ROULETTE_PATH, sep="\t", compression="gzip")
-    roulette["mu"] = pd.to_numeric(roulette["mu"], errors="coerce")
-    roulette["n_sites"] = pd.to_numeric(roulette["n_sites"], errors="coerce")
-    footer = roulette["element_id"].isna() | (roulette["element_id"] == "NA")
+    for col in ("mu", "exp", "n_variants"):
+        roulette[col] = pd.to_numeric(roulette[col], errors="coerce")
+    footer = roulette["element_id"].isna() | (roulette["element_id"].astype(str) == "NA")
     if footer.any():
-        print(f"  filtering {int(footer.sum())} footer row(s)")
+        print(f"  filtering {int(footer.sum())} footer/total row(s)")
     roulette = roulette[~footer].copy()
+    roulette = roulette.rename(columns={"exp": "exp_roulette_raw", "n_variants": "n_variants"})
 
     print("Loading merged Gnocchi table ...")
     gn = load_gnocchi(
         usecols=[
-            "chrom",
-            "start",
-            "end",
-            "element_id",
-            "possible",
-            "observed",
-            "expected_unadj",
-            "z_adj",
-            "z_unadj",
+            "chrom", "start", "end", "element_id",
+            "possible", "observed", "expected", "expected_unadj",
+            "z_adj", "z_unadj",
         ]
     )
     print(f"  Gnocchi rows: {len(gn):,}")
     print(f"  Roulette rows (after footer filter): {len(roulette):,}")
 
     print("Merging on element_id ...")
-    df = gn.merge(roulette[["element_id", "mu", "n_sites"]], on="element_id", how="inner")
+    df = gn.merge(roulette[["element_id", "mu", "exp_roulette_raw", "n_variants"]], on="element_id", how="inner")
     print(f"  merged rows: {len(df):,}")
 
     valid = (
-        np.isfinite(df["mu"])
-        & np.isfinite(df["possible"])
+        np.isfinite(df["exp_roulette_raw"]) & (df["exp_roulette_raw"] > 0)
+        & np.isfinite(df["n_variants"]) & (df["n_variants"] > 0)
+        & np.isfinite(df["possible"]) & (df["possible"] > 0)
         & np.isfinite(df["observed"])
-        & (df["mu"] > 0)
-        & (df["possible"] > 0)
+        & np.isfinite(df["expected_unadj"]) & (df["expected_unadj"] > 0)
     )
     before = len(df)
     df = df[valid].copy()
     print(f"  retained valid rows: {len(df):,} / {before:,}")
 
-    print("Computing Lens A/C/D derived metrics ...")
-    df["op"] = df["observed"] / df["possible"]
-    df["omu"] = df["observed"] / df["mu"]
-    df["mu_rank"] = df["mu"].rank(method="average", pct=True)
-    df["exp_unadj_rank"] = df["expected_unadj"].rank(method="average", pct=True)
+    n_low_cov = int((df["n_variants"] < MAX_COVERAGE).sum())
+    print(f"  windows with incomplete Roulette coverage (n_variants<{MAX_COVERAGE}): {n_low_cov:,}")
 
-    beta1, beta0 = np.polyfit(df["mu"].values, df["op"].values, 1)
-    df["op_fit"] = beta0 + beta1 * df["mu"]
-    df["op_residual"] = df["op"] - df["op_fit"]
+    # ── Build comparable Roulette expected ───────────────────────────────────
+    print("Building comparable Roulette expected (diploid + accessibility) ...")
+    df["coverage"] = df["n_variants"] / MAX_COVERAGE
+    exp_per_site = df["exp_roulette_raw"] / df["n_variants"]
+    df["exp_roulette"] = DIPLOID_FACTOR * exp_per_site * df["possible"]
 
-    scale = float(df["observed"].sum() / df["mu"].sum())
-    intercept = float(np.log(scale))
-    df["fit_poisson"] = df["mu"] * scale
-    df["z_roulette_dev"] = _deviance_residual(df["observed"].values, df["fit_poisson"].values)
-    pearson_chi2 = np.sum((df["observed"] - df["fit_poisson"]) ** 2 / np.clip(df["fit_poisson"], 1e-12, None))
-    dispersion = float(pearson_chi2 / max(len(df) - 1, 1))
-    print(f"  O/P~mu linear fit: op = {beta0:.5e} + {beta1:.5e}*mu")
-    print(f"  Poisson offset intercept: {intercept:.6f}, dispersion={dispersion:.4f}")
+    df["oe_adj"] = df["observed"] / df["expected"]
+    df["oe_unadj"] = df["observed"] / df["expected_unadj"]
+    df["oe_roulette"] = df["observed"] / df["exp_roulette"]
+    df["z_roulette"] = compute_gnocchi_z(df["observed"].values, df["exp_roulette"].values)
+    df["delta_z"] = df["z_unadj"] - df["z_adj"]
 
-    print("Labeling exemplar and fleet deserts ...")
+    # ── Calibration diagnostics ──────────────────────────────────────────────
+    sum_obs = float(df["observed"].sum())
+    sum_unadj = float(df["expected_unadj"].sum())
+    sum_raw = float(df["exp_roulette_raw"].sum())
+    sum_rou = float(df["exp_roulette"].sum())
+    implied_k = sum_obs / sum_rou
+    print("\n=== Calibration diagnostics (desert windows) ===")
+    print(f"  sum observed                 = {sum_obs:,.0f}")
+    print(f"  sum expected_unadj (gnomAD)  = {sum_unadj:,.0f}   (/obs = {sum_unadj/sum_obs:.3f})")
+    print(f"  sum exp_roulette_raw         = {sum_raw:,.0f}   (/obs = {sum_raw/sum_obs:.3f})")
+    print(f"  sum exp_roulette (corrected) = {sum_rou:,.0f}   (/obs = {sum_rou/sum_obs:.3f})")
+    print(f"  residual implied scale k (obs/corrected) = {implied_k:.4f}  (≈1 means diploid+coverage fully reconcile)")
+
+    # ── Labeling ─────────────────────────────────────────────────────────────
+    print("\nLabeling exemplar and fleet deserts ...")
     df = label_deserts(df)
     df = df.rename(columns={"desert": "desert_exemplar"})
     all_deserts = load_all_deserts()
     fleet = label_deserts_fleet(df, all_deserts)
     fleet = fleet[fleet["desert"].notna()].copy()
-    print(f"  fleet-labeled rows: {len(fleet):,}")
+    print(f"  fleet-labeled rows: {len(fleet):,}  across {fleet['desert'].nunique():,} deserts")
 
-    print("Lens B: model-concordance plot ...")
-    _save_model_concordance(fleet, os.path.join(RESULTS_DIR, "roulette_model_concordance.png"))
-
-    print("Lens A: O/P-vs-mu + O/mu summaries ...")
-    _save_op_vs_mu(fleet, beta0=beta0, beta1=beta1, out_path=os.path.join(RESULTS_DIR, "roulette_op_vs_mu_scatter.png"))
-    exemplar_summary = _save_omu_boxplots(fleet, os.path.join(RESULTS_DIR, "roulette_omu_exemplar_boxplots.png"))
-    exemplar_summary.to_csv(os.path.join(RESULTS_DIR, "roulette_desert_summary.tsv"), sep="\t", index=False)
-
-    print("Lens D: roulette deviance residual plots ...")
-    _save_glm_scatter(fleet, os.path.join(RESULTS_DIR, "roulette_glm_scatter.png"))
-    _save_glm_distributions(fleet, os.path.join(RESULTS_DIR, "roulette_glm_distributions.png"))
-
-    print("Spatial profiles for exemplars ...")
+    # ── Plots ────────────────────────────────────────────────────────────────
+    print("Generating comparison plots ...")
+    _save_zscore_distributions(fleet, os.path.join(RESULTS_DIR, "roulette_zscore_distributions.png"))
+    _save_scatter_vs_gnocchi(fleet, os.path.join(RESULTS_DIR, "roulette_scatter_vs_gnocchi.png"))
+    _save_oe_boxplots(fleet, os.path.join(RESULTS_DIR, "roulette_oe_boxplots.png"))
     _save_spatial_profiles(fleet)
 
-    print("Computing fleet summary table ...")
-    rows = []
-    omu_series = fleet["omu"].dropna()
-    for desert_id, sub in fleet.groupby("desert", sort=False):
-        mu_exp_r, _ = _safe_corr(sub["mu"], sub["expected_unadj"])
-        mean_omu = float(sub["omu"].mean())
-        rows.append(
-            {
-                "desert_id": desert_id,
-                "n_windows": int(len(sub)),
-                "mean_z_adj": float(sub["z_adj"].mean()),
-                "mean_z_unadj": float(sub["z_unadj"].mean()),
-                "mean_delta_z": float((sub["z_unadj"] - sub["z_adj"]).mean()),
-                "mean_op": float(sub["op"].mean()),
-                "mean_op_residual": float(sub["op_residual"].mean()),
-                "mean_omu": mean_omu,
-                "omu_percentile": float((mean_omu > omu_series).mean() * 100.0),
-                "mean_z_roulette_dev": float(sub["z_roulette_dev"].mean()),
-                "mean_rank_mu": float(sub["mu_rank"].mean()),
-                "mean_rank_exp_unadj": float(sub["exp_unadj_rank"].mean()),
-                "mean_rank_diff": float((sub["mu_rank"] - sub["exp_unadj_rank"]).mean()),
-                "pearson_mu_expected_unadj": float(mu_exp_r),
-            }
-        )
+    # ── Exemplar summary ─────────────────────────────────────────────────────
+    print("Building exemplar summary ...")
+    ex_rows = []
+    for name in DESERT_ORDER:
+        sub = fleet[fleet["desert_exemplar"] == name]
+        if sub.empty:
+            continue
+        ex_rows.append({
+            "desert_id": name,
+            "note": DESERTS[name][3],
+            "n_windows": int(len(sub)),
+            "mean_coverage": float(sub["coverage"].mean()),
+            "mean_oe_unadj": float(sub["oe_unadj"].mean()),
+            "mean_oe_roulette": float(sub["oe_roulette"].mean()),
+            "mean_z_adj": float(sub["z_adj"].mean()),
+            "median_z_adj": float(sub["z_adj"].median()),
+            "mean_z_unadj": float(sub["z_unadj"].mean()),
+            "median_z_unadj": float(sub["z_unadj"].median()),
+            "mean_z_roulette": float(sub["z_roulette"].mean()),
+            "median_z_roulette": float(sub["z_roulette"].median()),
+            "corr_z_roulette_unadj": _safe_corr(sub["z_roulette"], sub["z_unadj"]),
+        })
+    exemplar_summary = pd.DataFrame(ex_rows)
+    exemplar_summary.to_csv(os.path.join(RESULTS_DIR, "roulette_desert_summary.tsv"), sep="\t", index=False)
 
+    # ── Fleet summary ────────────────────────────────────────────────────────
+    print("Building fleet summary ...")
+    rows = []
+    for desert_id, sub in fleet.groupby("desert", sort=False):
+        rows.append({
+            "desert_id": desert_id,
+            "n_windows": int(len(sub)),
+            "mean_coverage": float(sub["coverage"].mean()),
+            "mean_z_adj": float(sub["z_adj"].mean()),
+            "mean_z_unadj": float(sub["z_unadj"].mean()),
+            "mean_delta_z": float((sub["z_unadj"] - sub["z_adj"]).mean()),
+            "mean_z_roulette": float(sub["z_roulette"].mean()),
+            "median_z_roulette": float(sub["z_roulette"].median()),
+            "mean_oe_unadj": float(sub["oe_unadj"].mean()),
+            "mean_oe_roulette": float(sub["oe_roulette"].mean()),
+            "corr_z_roulette_unadj": _safe_corr(sub["z_roulette"], sub["z_unadj"]),
+        })
     summary = pd.DataFrame(rows)
     meta = all_deserts.rename(columns={"start": "desert_start", "end": "desert_end"})[
         ["desert_id", "chrom", "desert_start", "desert_end", "panel_label"]
     ]
     summary = summary.merge(meta, on="desert_id", how="left", validate="one_to_one")
     summary["category"] = summary.apply(_category, axis=1)
-    sign_match = np.sign(summary["mean_z_roulette_dev"]) == np.sign(summary["mean_z_unadj"])
+    sign_match = np.sign(summary["mean_z_roulette"]) == np.sign(summary["mean_z_unadj"])
     summary["concordance_flag"] = np.where(sign_match, "concordant", "discordant")
     summary = summary.sort_values(
         ["chrom", "desert_start"],
         key=lambda s: s.map(_chrom_sort_key) if s.name == "chrom" else s,
     ).reset_index(drop=True)
 
-    print("Lens C: rank-concordance plot ...")
-    _save_rank_concordance(summary, os.path.join(RESULTS_DIR, "roulette_rank_concordance.png"))
-
-    print("Fleet-level scatters ...")
     _save_fleet_scatter(summary, os.path.join(RESULTS_DIR, "roulette_fleet_scatter.png"))
-    _save_fleet_op_residual(summary, os.path.join(RESULTS_DIR, "roulette_fleet_op_residual.png"))
-
     out_summary = os.path.join(RESULTS_DIR, "roulette_fleet_summary.tsv")
     summary.to_csv(out_summary, sep="\t", index=False)
     print(f"  wrote {out_summary}")
 
-    overall_mu_r, _ = _safe_corr(fleet["mu"], fleet["expected_unadj"])
-    overall_mu_s, _ = _safe_spearman(fleet["mu"], fleet["expected_unadj"])
+    # ── Key findings ─────────────────────────────────────────────────────────
+    overall_r_unadj = _safe_corr(fleet["z_roulette"], fleet["z_unadj"])
+    overall_r_adj = _safe_corr(fleet["z_roulette"], fleet["z_adj"])
     concordance_frac = float(np.mean(summary["concordance_flag"] == "concordant"))
     discordant_n = int(np.sum(summary["concordance_flag"] == "discordant"))
 
-    print("\n=== Key findings (summary stats) ===")
-    print(f"  windows analyzed: {len(fleet):,}")
-    print(f"  deserts analyzed: {summary['desert_id'].nunique():,}")
-    print(f"  mu vs expected_unadj: Pearson r={overall_mu_r:.4f}, Spearman rho={overall_mu_s:.4f}")
-    print(f"  Poisson offset intercept={intercept:.6f}, dispersion={dispersion:.4f}")
-    print(f"  fleet sign concordance (roulette_dev vs z_unadj): {concordance_frac:.1%} ({len(summary)-discordant_n}/{len(summary)})")
-    print(f"  discordant deserts: {discordant_n}")
+    print("\n=== Key findings ===")
+    print(f"  windows analyzed: {len(fleet):,}  | deserts: {summary['desert_id'].nunique():,}")
+    print(f"  z_roulette vs z_unadj : Pearson r={overall_r_unadj:.4f}")
+    print(f"  z_roulette vs z_adj   : Pearson r={overall_r_adj:.4f}")
+    print(f"  fleet sign concordance (z_roulette vs z_unadj): {concordance_frac:.1%} "
+          f"({len(summary)-discordant_n}/{len(summary)}); discordant={discordant_n}")
 
     print("\n=== Exemplar means ===")
-    exemplar_cols = ["desert_id", "mean_z_adj", "mean_z_unadj", "mean_op_residual", "mean_z_roulette_dev"]
-    print(exemplar_summary[["desert_id", "mean_z_adj", "mean_z_unadj", "mean_op_residual", "mean_z_roulette_dev"]].to_string(index=False))
+    cols = ["desert_id", "mean_z_adj", "mean_z_unadj", "mean_z_roulette", "mean_oe_roulette", "corr_z_roulette_unadj"]
+    with pd.option_context("display.float_format", "{:,.3f}".format):
+        print(exemplar_summary[cols].to_string(index=False))
 
     print("\nDone.")
 
