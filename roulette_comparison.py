@@ -30,6 +30,7 @@ desert anomalies across the two mutation models.
 
 from __future__ import annotations
 
+import argparse
 import os
 from typing import Any
 
@@ -51,14 +52,22 @@ from utils.desert_utils import (
 )
 
 
-ROULETTE_PATH = os.path.join("data", "roulette_gd_relative_mu_agg_1kb.tsv.bgz")
+# Diploid-calibrated Roulette expected counts (default); needs a factor of 2 to
+# reach the haploid gnomAD basis.
+ROULETTE_PATH_DIPLOID = os.path.join("data", "roulette_gd_relative_mu_agg_1kb.tsv.bgz")
+# Haploid-calibrated Roulette expected counts; already on the haploid basis, so
+# no factor of 2 is applied.
+ROULETTE_PATH_HAPLOID = os.path.join("data", "roulette_gd_relative_mu_haploid_agg_1kb.tsv.bgz")
 
 # Roulette enumerates 3 alternate alleles per base, so a fully-covered 1kb
 # window has 1000 * 3 = 3000 possible substitutions.
 MAX_COVERAGE = 3000
 
-# Roulette rates are diploid; gnomAD/Gnocchi work on a haploid basis.
+# Roulette rates in the default file are diploid; gnomAD/Gnocchi work on a
+# haploid basis, so the diploid expected is multiplied by 2. The --haploid file
+# is already haploid and uses a factor of 1.
 DIPLOID_FACTOR = 2.0
+HAPLOID_FACTOR = 1.0
 
 
 def compute_gnocchi_z(obs: np.ndarray, exp: np.ndarray) -> np.ndarray:
@@ -183,8 +192,8 @@ def _save_spatial_profiles(df: pd.DataFrame) -> None:
             continue
         pos = (sub["start"] + sub["end"]) / 2
         fig, axes = plt.subplots(
-            3, 1, figsize=(14, 8), sharex=True,
-            gridspec_kw={"height_ratios": [2.2, 1.2, 0.9]},
+            2, 1, figsize=(14, 6.5), sharex=True,
+            gridspec_kw={"height_ratios": [2.2, 1.2]},
         )
 
         ax = axes[0]
@@ -201,15 +210,9 @@ def _save_spatial_profiles(df: pd.DataFrame) -> None:
         ax.plot(pos, sub["oe_roulette"], lw=0.9, color="tab:red", label="O/E roulette")
         ax.axhline(1.0, color="grey", lw=0.5, ls="--")
         ax.set_ylabel("O/E")
-        ax.legend(fontsize=8, ncol=2)
-
-        ax = axes[2]
-        ax.fill_between(pos, sub["coverage"], 0, color="tab:gray", alpha=0.5, step="mid")
-        ax.axhline(1.0, color="grey", lw=0.5, ls="--")
-        ax.set_ylim(0, 1.05)
-        ax.set_ylabel("Roulette\ncoverage")
         ax.set_xlabel(f"{chrom} position")
         ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{x/1e6:.1f} Mb"))
+        ax.legend(fontsize=8, ncol=2)
 
         fig.tight_layout()
         fig.savefig(os.path.join(RESULTS_DIR, f"roulette_spatial_profile_{name}.png"), dpi=150)
@@ -245,10 +248,28 @@ def _save_fleet_scatter(summary: pd.DataFrame, out_path: str) -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--haploid",
+        action="store_true",
+        help="Use the haploid-calibrated Roulette file and skip the diploid x2 factor.",
+    )
+    args = parser.parse_args()
+
+    if args.haploid:
+        roulette_path = ROULETTE_PATH_HAPLOID
+        scale_factor = HAPLOID_FACTOR
+        basis = "haploid"
+    else:
+        roulette_path = ROULETTE_PATH_DIPLOID
+        scale_factor = DIPLOID_FACTOR
+        basis = "diploid"
+
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
+    print(f"Roulette basis: {basis}  (file={roulette_path}, scale_factor={scale_factor})")
     print("Loading Roulette aggregated expected counts ...")
-    roulette = pd.read_csv(ROULETTE_PATH, sep="\t", compression="gzip")
+    roulette = pd.read_csv(roulette_path, sep="\t", compression="gzip")
     for col in ("mu", "exp", "n_variants"):
         roulette[col] = pd.to_numeric(roulette[col], errors="coerce")
     footer = roulette["element_id"].isna() | (roulette["element_id"].astype(str) == "NA")
@@ -287,10 +308,10 @@ def main() -> None:
     print(f"  windows with incomplete Roulette coverage (n_variants<{MAX_COVERAGE}): {n_low_cov:,}")
 
     # ── Build comparable Roulette expected ───────────────────────────────────
-    print("Building comparable Roulette expected (diploid + accessibility) ...")
+    print(f"Building comparable Roulette expected ({basis} x{scale_factor:.0f} + accessibility) ...")
     df["coverage"] = df["n_variants"] / MAX_COVERAGE
     exp_per_site = df["exp_roulette_raw"] / df["n_variants"]
-    df["exp_roulette"] = DIPLOID_FACTOR * exp_per_site * df["possible"]
+    df["exp_roulette"] = scale_factor * exp_per_site * df["possible"]
 
     df["oe_adj"] = df["observed"] / df["expected"]
     df["oe_unadj"] = df["observed"] / df["expected_unadj"]
@@ -309,7 +330,8 @@ def main() -> None:
     print(f"  sum expected_unadj (gnomAD)  = {sum_unadj:,.0f}   (/obs = {sum_unadj/sum_obs:.3f})")
     print(f"  sum exp_roulette_raw         = {sum_raw:,.0f}   (/obs = {sum_raw/sum_obs:.3f})")
     print(f"  sum exp_roulette (corrected) = {sum_rou:,.0f}   (/obs = {sum_rou/sum_obs:.3f})")
-    print(f"  residual implied scale k (obs/corrected) = {implied_k:.4f}  (≈1 means diploid+coverage fully reconcile)")
+    print(f"  residual implied scale k (obs/corrected) = {implied_k:.4f}  "
+          f"(≈1 means {basis} scaling + coverage reconcile; NOT applied, diagnostic only)")
 
     # ── Labeling ─────────────────────────────────────────────────────────────
     print("\nLabeling exemplar and fleet deserts ...")
