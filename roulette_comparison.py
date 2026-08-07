@@ -57,7 +57,7 @@ from utils.desert_utils import (
 ROULETTE_PATH_DIPLOID = os.path.join("data", "roulette_gd_relative_mu_agg_1kb.tsv.bgz")
 # Haploid-calibrated Roulette expected counts; already on the haploid basis, so
 # no factor of 2 is applied.
-ROULETTE_PATH_HAPLOID = os.path.join("data", "roulette_gd_relative_mu_haploid_agg_1kb.tsv.bgz")
+ROULETTE_PATH_HAPLOID = os.path.join("data", "roulette_v3_hap_gd_relative_mu_agg_1kb.tsv.bgz")
 
 # Roulette enumerates 3 alternate alleles per base, so a fully-covered 1kb
 # window has 1000 * 3 = 3000 possible substitutions.
@@ -270,7 +270,10 @@ def main() -> None:
     print(f"Roulette basis: {basis}  (file={roulette_path}, scale_factor={scale_factor})")
     print("Loading Roulette aggregated expected counts ...")
     roulette = pd.read_csv(roulette_path, sep="\t", compression="gzip")
-    for col in ("mu", "exp", "n_variants"):
+    numeric_cols = ["exp", "n_variants"]
+    if "mu" in roulette.columns:
+        numeric_cols.append("mu")
+    for col in numeric_cols:
         roulette[col] = pd.to_numeric(roulette[col], errors="coerce")
     footer = roulette["element_id"].isna() | (roulette["element_id"].astype(str) == "NA")
     if footer.any():
@@ -290,7 +293,12 @@ def main() -> None:
     print(f"  Roulette rows (after footer filter): {len(roulette):,}")
 
     print("Merging on element_id ...")
-    df = gn.merge(roulette[["element_id", "mu", "exp_roulette_raw", "n_variants"]], on="element_id", how="inner")
+    merge_cols = ["element_id", "exp_roulette_raw", "n_variants"]
+    if "mu" in roulette.columns:
+        merge_cols.append("mu")
+    df = gn.merge(roulette[merge_cols], on="element_id", how="inner")
+    if "mu" in df.columns:
+        df = df.drop(columns=["mu"])
     print(f"  merged rows: {len(df):,}")
 
     valid = (

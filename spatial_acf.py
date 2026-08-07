@@ -19,6 +19,7 @@ from statsmodels.tsa.stattools import acf
 from utils.desert_utils import (
     DESERT_ORDER,
     RESULTS_DIR,
+    desert_palette,
     label_deserts,
     load_gnocchi,
 )
@@ -147,17 +148,19 @@ def main() -> None:
         plt.close(fig)
         print(f"  wrote {fig_path}")
 
-    # ── Combined z_adj ACF comparison across deserts ─────────────────────
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for name in DESERT_ORDER:
-        ax.plot(lag_kb, acf_dict[name]["z_adj"], label=name)
-    ax.axhline(0, color="k", lw=0.5)
-    ax.set_xlabel("lag (kb)")
-    ax.set_ylabel("ACF(z_adj)")
-    ax.set_title("z_adj ACF across deserts")
-    ax.legend()
+    # ── Combined ACF comparison across deserts: z_adj vs z_unadj ─────────
+    palette = desert_palette()
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+    for ax, resp in zip(axes, ["z_adj", "z_unadj"]):
+        for name in DESERT_ORDER:
+            ax.plot(lag_kb, acf_dict[name][resp], label=name, color=palette[name])
+        ax.axhline(0, color="k", lw=0.5)
+        ax.set_xlabel("lag (kb)")
+        ax.set_title(f"ACF({resp}) across deserts")
+    axes[0].set_ylabel("autocorrelation")
+    axes[0].legend(fontsize=8)
     fig.tight_layout()
-    fig_path = os.path.join(RESULTS_DIR, "analysis_c_acf_zadj_combined.png")
+    fig_path = os.path.join(RESULTS_DIR, "analysis_c_acf_combined.png")
     fig.savefig(fig_path, dpi=150)
     plt.close(fig)
     print(f"  wrote {fig_path}")
