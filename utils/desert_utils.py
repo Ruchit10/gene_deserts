@@ -423,6 +423,31 @@ def window_interval_overlap(
     return out
 
 
+def merge_intervals(df: pd.DataFrame) -> pd.DataFrame:
+    """Flatten a chrom/start/end interval table into merged, non-overlapping
+    intervals per chromosome (sort + sweep merge)."""
+    required = {"chrom", "start", "end"}
+    if not required.issubset(df.columns):
+        raise ValueError(f"df must contain columns {sorted(required)}")
+
+    out_rows: list[dict[str, object]] = []
+    for chrom, sub in df.sort_values(["chrom", "start"]).groupby("chrom", sort=False):
+        cur_start: int | None = None
+        cur_end: int | None = None
+        for s, e in zip(sub["start"].to_numpy(dtype=np.int64),
+                         sub["end"].to_numpy(dtype=np.int64), strict=False):
+            if cur_start is None:
+                cur_start, cur_end = int(s), int(e)
+            elif s <= cur_end:
+                cur_end = max(cur_end, int(e))
+            else:
+                out_rows.append({"chrom": chrom, "start": cur_start, "end": cur_end})
+                cur_start, cur_end = int(s), int(e)
+        if cur_start is not None:
+            out_rows.append({"chrom": chrom, "start": cur_start, "end": cur_end})
+    return pd.DataFrame(out_rows, columns=["chrom", "start", "end"])
+
+
 def aggregate_block_weighted_mean(
     windows_df: pd.DataFrame,
     blocks_df: pd.DataFrame,
