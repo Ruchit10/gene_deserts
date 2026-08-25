@@ -8,14 +8,11 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-from utils.desert_utils import DESERTS as deserts, DATA_DIR as DATA, RESULTS_DIR as OUT
+from utils.desert_utils import DESERTS as deserts, DATA_DIR as DATA, RESULTS_DIR as OUT, load_expected_unadj
 
 # ── Step 1+2: Load, merge, recompute ─────────────────────────────────────────
 print("Loading unadjusted expected sums …")
-unadj = pd.read_csv(
-    os.path.join(DATA, "expected_unadj_sum_by_region.txt"),
-    sep="\t", header=None, names=["element_id", "expected_unadj"],
-)
+unadj = load_expected_unadj()
 print(f"  {len(unadj):,} windows loaded")
 
 print("Loading original Gnocchi table …")
@@ -95,7 +92,7 @@ print("  Saved desert_histograms.png")
 # ── Plot B: scatter z_adj vs z_unadj per desert ─────────────────────────────
 desert_df = df[df["desert"].notna()].copy()
 fig, ax = plt.subplots(figsize=(7, 7))
-colors = dict(zip(deserts.keys(), plt.cm.tab10.colors[:5]))
+colors = dict(zip(deserts.keys(), plt.get_cmap("tab10").colors[:5]))
 for name in deserts:
     sub = desert_df[desert_df["desert"] == name]
     ax.scatter(sub["z_adj"], sub["z_unadj"], s=4, alpha=0.3,

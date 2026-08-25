@@ -196,6 +196,65 @@ def load_features(element_ids: Iterable[str] | None = None) -> pd.DataFrame:
     return df[df["element_id"].isin(ids_set)].reset_index(drop=True)
 
 
+EXPECTED_CONTEXT_METHYL_TABLE = os.path.join(
+    DATA_DIR, "expected_counts_per_context_methyl_genome_1kb.txt.gz"
+)
+EXPECTED_UNADJ_CACHE = os.path.join(RESULTS_DIR, "_expected_unadj_cache.pkl.gz")
+
+
+def _build_expected_unadj_cache() -> None:
+    """Sum per-trinucleotide-context expected counts into per-window totals.
+
+    This is the "pre-PCA" expectation used to ship as a separate flat file
+    (`expected_unadj_sum_by_region.txt`); it is exactly the per-window sum of
+    the `expected` column in the context+methylation table, so we derive it
+    from that ~540MB file instead of keeping a redundant second copy on disk.
+    """
+    partial_sums = []
+    for chunk in pd.read_csv(
+        EXPECTED_CONTEXT_METHYL_TABLE, sep="\t",
+        usecols=["element_id", "expected"], chunksize=2_000_000,
+    ):
+        partial_sums.append(
+            chunk.groupby("element_id", sort=False, as_index=False)["expected"].sum()
+        )
+    combined = pd.concat(partial_sums, ignore_index=True)
+    out = combined.groupby("element_id", sort=False, as_index=False)["expected"].sum()
+    out = out.rename(columns={"expected": "expected_unadj"})
+    out.to_pickle(EXPECTED_UNADJ_CACHE, compression="gzip")
+
+
+def load_expected_unadj(element_ids: Iterable[str] | None = None) -> pd.DataFrame:
+    """Load per-window unadjusted (pre-PCA) expected counts.
+
+    First call parses the ~540MB gzipped context+methylation table and writes
+    a pickle cache of per-window sums; subsequent calls read the cache
+    directly. Returns columns `element_id`, `expected_unadj`.
+    """
+    if not os.path.exists(EXPECTED_UNADJ_CACHE):
+        print(f"[desert_utils] building expected_unadj cache at {EXPECTED_UNADJ_CACHE} (one-time) ...")
+        _build_expected_unadj_cache()
+    try:
+        df = pd.read_pickle(EXPECTED_UNADJ_CACHE, compression="gzip")
+    except Exception as exc:
+        # Common in shared repos when cache was created under a different
+        # pandas version (e.g., StringDtype pickle incompatibilities).
+        print(
+            "[desert_utils] expected_unadj cache unreadable; rebuilding cache "
+            f"at {EXPECTED_UNADJ_CACHE} ({exc.__class__.__name__}: {exc})"
+        )
+        try:
+            os.remove(EXPECTED_UNADJ_CACHE)
+        except OSError:
+            pass
+        _build_expected_unadj_cache()
+        df = pd.read_pickle(EXPECTED_UNADJ_CACHE, compression="gzip")
+    if element_ids is None:
+        return df
+    ids_set = set(element_ids)
+    return df[df["element_id"].isin(ids_set)].reset_index(drop=True)
+
+
 def _normalize_chrom_value(raw: object) -> str:
     """Normalize chromosome labels to chr-prefixed hg38 style."""
     if pd.isna(raw):
