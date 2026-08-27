@@ -497,6 +497,68 @@ def aggregate_block_weighted_mean(
     return out
 
 
+def aggregate_windows_over_regions(
+    regions_df: pd.DataFrame,
+    windows_df: pd.DataFrame,
+    value_cols: Iterable[str],
+) -> pd.DataFrame:
+    """Sum window-level value_cols over every window overlapping each region.
+
+    Whole-window sums (any overlap counts the window's full value, not
+    fraction-weighted) -- matching this pipeline's own convention for rolling
+    up 1kb Gnocchi windows into larger regions (sum observed/expected across
+    constituent windows first, then derive a single z on the totals).
+    Returns a frame indexed like regions_df with one summed column per
+    value_cols entry plus an `n_windows` overlap-count column.
+    """
+    value_cols = list(value_cols)
+    required_regions = {"chrom", "start", "end"}
+    required_windows = {"chrom", "start", "end"} | set(value_cols)
+    if not required_regions.issubset(regions_df.columns):
+        raise ValueError(f"regions_df must contain columns {sorted(required_regions)}")
+    if not required_windows.issubset(windows_df.columns):
+        raise ValueError(f"windows_df must contain columns {sorted(required_windows)}")
+
+    out = pd.DataFrame(0.0, index=regions_df.index, columns=value_cols)
+    n_windows = pd.Series(0, index=regions_df.index, dtype=np.int64)
+
+    common_chroms = sorted(set(regions_df["chrom"]) & set(windows_df["chrom"]))
+    for chrom in common_chroms:
+        r_sub = regions_df[regions_df["chrom"] == chrom][["start", "end"]].copy()
+        w_sub = windows_df[windows_df["chrom"] == chrom][["start", "end", *value_cols]].copy()
+        if r_sub.empty or w_sub.empty:
+            continue
+        r_sorted = r_sub.sort_values("start")
+        w_sorted = w_sub.sort_values("start")
+        rs = r_sorted["start"].to_numpy(dtype=np.int64)
+        re = r_sorted["end"].to_numpy(dtype=np.int64)
+        ws = w_sorted["start"].to_numpy(dtype=np.int64)
+        we = w_sorted["end"].to_numpy(dtype=np.int64)
+        wv = {c: w_sorted[c].to_numpy(dtype=float) for c in value_cols}
+
+        sums = {c: np.zeros(len(rs), dtype=float) for c in value_cols}
+        counts = np.zeros(len(rs), dtype=np.int64)
+        j = 0
+        for idx, (r_start, r_end) in enumerate(zip(rs, re, strict=False)):
+            while j < len(we) and we[j] <= r_start:
+                j += 1
+            k = j
+            while k < len(ws) and ws[k] < r_end:
+                if we[k] > r_start:
+                    for c in value_cols:
+                        v = wv[c][k]
+                        if np.isfinite(v):
+                            sums[c][idx] += v
+                    counts[idx] += 1
+                k += 1
+        for c in value_cols:
+            out.loc[r_sorted.index, c] = sums[c]
+        n_windows.loc[r_sorted.index] = counts
+
+    out["n_windows"] = n_windows
+    return out
+
+
 def load_phyloP_summary(path: str = PHYLOP_TABLE) -> pd.DataFrame:
     """Load UCSC phyloP summary blocks with per-block mean phyloP."""
     # UCSC summary table columns used: 1 chrom, 2 start, 3 end, 6 count, 12 sumData

@@ -46,41 +46,16 @@ from utils.desert_utils import (
     label_deserts,
     label_deserts_fleet,
     load_all_deserts,
-    load_gnocchi,
 )
-from utils.region_annotation import label_region_categories
-
-
-# Diploid-calibrated Roulette expected counts (default); needs a factor of 2 to
-# reach the haploid gnomAD basis.
-ROULETTE_PATH_DIPLOID = os.path.join("data", "roulette_gd_relative_mu_agg_1kb.tsv.bgz")
-# Haploid-calibrated Roulette expected counts; already on the haploid basis, so
-# no factor of 2 is applied.
-ROULETTE_PATH_HAPLOID = os.path.join("data", "roulette_v3_hap_gd_relative_mu_agg_1kb.tsv.bgz")
-# Genome-wide, non-desert-restricted Roulette expected counts. Despite sharing
-# the diploid file's 4-column schema (element_id, mu, exp, n_variants), this
-# file is calibrated on the HAPLOID model, so it always pairs with
-# HAPLOID_FACTOR -- there is no genome-wide diploid-calibrated file.
-ROULETTE_PATH_NONCODING = os.path.join("data", "roulette_nc_relative_mu_agg_1kb.tsv.bgz")
-
-# Roulette enumerates 3 alternate alleles per base, so a fully-covered 1kb
-# window has 1000 * 3 = 3000 possible substitutions.
-MAX_COVERAGE = 3000
-
-# Roulette rates in the default file are diploid; gnomAD/Gnocchi work on a
-# haploid basis, so the diploid expected is multiplied by 2. The --haploid file
-# is already haploid and uses a factor of 1.
-DIPLOID_FACTOR = 2.0
-HAPLOID_FACTOR = 1.0
-
-
-def compute_gnocchi_z(obs: np.ndarray, exp: np.ndarray) -> np.ndarray:
-    """Signed chi deviation, identical to the Gnocchi z definition."""
-    obs = np.asarray(obs, dtype=float)
-    exp = np.asarray(exp, dtype=float)
-    exp = np.clip(exp, 1e-12, None)
-    chi2 = (obs - exp) ** 2 / exp
-    return np.where(obs < exp, np.sqrt(chi2), -np.sqrt(chi2))
+from utils.benchmark_utils import (
+    DIPLOID_FACTOR,
+    HAPLOID_FACTOR,
+    ROULETTE_PATH_DIPLOID,
+    ROULETTE_PATH_HAPLOID,
+    ROULETTE_PATH_NONCODING,
+    label_region_categories,
+    load_roulette_z_table,
+)
 
 
 def _safe_corr(x: pd.Series, y: pd.Series) -> float:
@@ -317,64 +292,7 @@ def main() -> None:
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     print(f"Roulette basis: {basis}  (file={roulette_path}, scale_factor={scale_factor})")
-    print("Loading Roulette aggregated expected counts ...")
-    roulette = pd.read_csv(roulette_path, sep="\t", compression="gzip")
-    numeric_cols = ["exp", "n_variants"]
-    if "mu" in roulette.columns:
-        numeric_cols.append("mu")
-    for col in numeric_cols:
-        roulette[col] = pd.to_numeric(roulette[col], errors="coerce")
-    footer = roulette["element_id"].isna() | (roulette["element_id"].astype(str) == "NA")
-    if footer.any():
-        print(f"  filtering {int(footer.sum())} footer/total row(s)")
-    roulette = roulette[~footer].copy()
-    roulette = roulette.rename(columns={"exp": "exp_roulette_raw", "n_variants": "n_variants"})
-
-    print("Loading merged Gnocchi table ...")
-    gn = load_gnocchi(
-        usecols=[
-            "chrom", "start", "end", "element_id",
-            "possible", "observed", "expected", "expected_unadj",
-            "z_adj", "z_unadj",
-        ]
-    )
-    print(f"  Gnocchi rows: {len(gn):,}")
-    print(f"  Roulette rows (after footer filter): {len(roulette):,}")
-
-    print("Merging on element_id ...")
-    merge_cols = ["element_id", "exp_roulette_raw", "n_variants"]
-    if "mu" in roulette.columns:
-        merge_cols.append("mu")
-    df = gn.merge(roulette[merge_cols], on="element_id", how="inner")
-    if "mu" in df.columns:
-        df = df.drop(columns=["mu"])
-    print(f"  merged rows: {len(df):,}")
-
-    valid = (
-        np.isfinite(df["exp_roulette_raw"]) & (df["exp_roulette_raw"] > 0)
-        & np.isfinite(df["n_variants"]) & (df["n_variants"] > 0)
-        & np.isfinite(df["possible"]) & (df["possible"] > 0)
-        & np.isfinite(df["observed"])
-        & np.isfinite(df["expected_unadj"]) & (df["expected_unadj"] > 0)
-    )
-    before = len(df)
-    df = df[valid].copy()
-    print(f"  retained valid rows: {len(df):,} / {before:,}")
-
-    n_low_cov = int((df["n_variants"] < MAX_COVERAGE).sum())
-    print(f"  windows with incomplete Roulette coverage (n_variants<{MAX_COVERAGE}): {n_low_cov:,}")
-
-    # ── Build comparable Roulette expected ───────────────────────────────────
-    print(f"Building comparable Roulette expected ({basis} x{scale_factor:.0f} + accessibility) ...")
-    df["coverage"] = df["n_variants"] / MAX_COVERAGE
-    exp_per_site = df["exp_roulette_raw"] / df["n_variants"]
-    df["exp_roulette"] = scale_factor * exp_per_site * df["possible"]
-
-    df["oe_adj"] = df["observed"] / df["expected"]
-    df["oe_unadj"] = df["observed"] / df["expected_unadj"]
-    df["oe_roulette"] = df["observed"] / df["exp_roulette"]
-    df["z_roulette"] = compute_gnocchi_z(df["observed"].values, df["exp_roulette"].values)
-    df["delta_z"] = df["z_unadj"] - df["z_adj"]
+    df = load_roulette_z_table(roulette_path, scale_factor)
 
     # ── Calibration diagnostics ──────────────────────────────────────────────
     sum_obs = float(df["observed"].sum())
