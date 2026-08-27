@@ -28,9 +28,11 @@ from utils.desert_utils import RESULTS_DIR
 from utils.benchmark_utils import (
     COMPARATOR_SCORES,
     GNOCCHI_COLORS,
+    GWAS_ANN_COLORS,
     NEGATIVE_SETS,
     POSITIVE_SETS,
     REFERENCE_LINE_COLOR,
+    REGULATORY_ANN_COLORS,
     Z_BIN_LABELS,
     attach_roulette_score,
     attach_roulette_to_annot,
@@ -39,6 +41,7 @@ from utils.benchmark_utils import (
     coerce_bool,
     compute_enhancer_z,
     enrichment_by_zbin,
+    filter_noncoding_qc,
     load_annot_table,
     load_comparisons_table,
     load_enh_gene_roadmaplinks,
@@ -179,15 +182,61 @@ def _plot_enrichment_grid(annot: pd.DataFrame, annot_cols: list[str], out_name: 
     print(f"  wrote {out}")
 
 
+DODGE_WIDTH = 0.6
+
+
+def _plot_enrichment_fig2_style(
+    annot: pd.DataFrame, annot_cols: list[str], ann_colors: dict[str, tuple], out_name: str,
+) -> None:
+    """Fig. 2a/2b-style layout: one subplot per score (z_adj/z_unadj/
+    z_roulette), with every annotation overlaid on the same axis --
+    mirrors fig_utils.py's plt_enrichment_re/plt_enrichment_gwas (each of
+    which puts all annotations on a single plot for one score), tiled into
+    a 3-panel row so all three scores are shown side by side. Annotations
+    are dodged evenly within each Z-bin (DODGE_WIDTH split across
+    len(annot_cols)) since their odds ratios/CIs otherwise overlap and
+    become unreadable when >=2 annotations track each other closely."""
+    offsets = (
+        np.linspace(-DODGE_WIDTH / 2, DODGE_WIDTH / 2, len(annot_cols))
+        if len(annot_cols) > 1 else [0.0]
+    )
+    fig, axes = plt.subplots(1, len(GNOCCHI_SCORES), figsize=(6 * len(GNOCCHI_SCORES), 4.5))
+    for ax, score in zip(axes, GNOCCHI_SCORES):
+        for annot_col, offset in zip(annot_cols, offsets):
+            enr = enrichment_by_zbin(annot, score, annot_col)
+            yerr = [enr["odds_ratio"] - enr["ci_lo"], enr["ci_hi"] - enr["odds_ratio"]]
+            ax.errorbar(enr["bin_idx"] + offset, enr["odds_ratio"], yerr=yerr,
+                        marker="o", ms=4, ls="-", lw=1, elinewidth=1.5, alpha=0.8,
+                        label=annot_col, color=ann_colors[annot_col])
+        ax.axhline(1.0, color=REFERENCE_LINE_COLOR, ls="--", lw=1)
+        ax.set_title(score, fontsize=10)
+        ax.set_xticks(range(len(Z_BIN_LABELS)))
+        ax.set_xticklabels(Z_BIN_LABELS, rotation=60, fontsize=7)
+        ax.set_ylabel("odds ratio")
+        style_axes(ax)
+    axes[0].legend(fontsize=7, loc="upper left")
+    fig.tight_layout()
+    out = _outpath(out_name)
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"  wrote {out}")
+
+
 def benchmark_enrichment_regulatory_elements(annot: pd.DataFrame) -> None:
-    _plot_enrichment_grid(annot, REGULATORY_COLS, "enrichment_regulatory_elements.png", ncols=3)
+    nc = filter_noncoding_qc(annot)
+    _plot_enrichment_grid(nc, REGULATORY_COLS, "enrichment_regulatory_elements.png", ncols=3)
+    _plot_enrichment_fig2_style(
+        nc, REGULATORY_COLS, REGULATORY_ANN_COLORS, "enrichment_regulatory_elements_fig2a_style.png")
 
 
 def benchmark_enrichment_gwas(annot: pd.DataFrame) -> None:
-    _plot_enrichment_grid(annot, GWAS_COLS, "enrichment_gwas.png", ncols=3)
+    nc = filter_noncoding_qc(annot)
+    _plot_enrichment_grid(nc, GWAS_COLS, "enrichment_gwas.png", ncols=3)
+    _plot_enrichment_fig2_style(nc, GWAS_COLS, GWAS_ANN_COLORS, "enrichment_gwas_fig2b_style.png")
 
 
 def benchmark_enrichment_gwas_vs_ccre(annot: pd.DataFrame) -> None:
+    annot = filter_noncoding_qc(annot)
     ccre_cols = ["ENCODE cCRE-PLS", "ENCODE cCRE-pELS", "ENCODE cCRE-dELS"]
     in_ccre = pd.concat([coerce_bool(annot[c]) for c in ccre_cols], axis=1).any(axis=1)
 
@@ -214,6 +263,7 @@ def benchmark_enrichment_gwas_vs_ccre(annot: pd.DataFrame) -> None:
 
 
 def benchmark_prop_roadmaplinks(annot: pd.DataFrame) -> None:
+    annot = filter_noncoding_qc(annot)
     fig, ax = plt.subplots(figsize=(8, 5))
     for score in GNOCCHI_SCORES:
         enr = enrichment_by_zbin(annot, score, "RoadmapLinks")

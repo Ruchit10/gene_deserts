@@ -575,6 +575,19 @@ def coerce_bool(s: pd.Series) -> pd.Series:
     )
 
 
+def filter_noncoding_qc(annot: pd.DataFrame) -> pd.DataFrame:
+    """Restrict to non-coding, QC-passing windows, matching the filter
+    fig_utils.py/efig_utils.py apply before every enrichment-by-Z-bin figure
+    (plt_enrichment_re/plt_enrichment_gwas/plt_enrichment_gwas_vs_ccre/
+    plt_prop_roadmaplinks all start from `df_z[(df_z['pass_qc']) &
+    (df_z['coding_prop']==0)]`) -- without it, ~7% of windows here overlap
+    coding sequence and skew the enrichment estimates relative to the paper."""
+    mask = annot["coding_prop"] == 0
+    if "pass_qc" in annot.columns:
+        mask &= coerce_bool(annot["pass_qc"])
+    return annot[mask]
+
+
 def enrichment_by_zbin(
     df: pd.DataFrame, z_col: str, annot_col: str, bin_edges: list[float] = Z_BIN_EDGES,
 ) -> pd.DataFrame:
@@ -667,6 +680,25 @@ COMPARATOR_COLORS = {
     "phastCons": "#969696", "phyloP": "#737373", "GERP": "#bdbdbd",
 }
 REFERENCE_LINE_COLOR = "#969696"
+
+# Per-annotation colors for the Fig. 2a/2b-style overlay layout, using the
+# exact same sns.cubehelix_palette() calls + indices as fig_utils.py's
+# plt_enrichment_re/plt_enrichment_gwas (ann_color dicts).
+_CMAP_DEFAULT = sns.cubehelix_palette()
+_CMAP_ROTATED = sns.cubehelix_palette(start=0.5, rot=-0.5)
+REGULATORY_ANN_COLORS = {
+    "ENCODE cCRE-PLS": _CMAP_DEFAULT[-2],
+    "ENCODE cCRE-pELS": _CMAP_DEFAULT[-3],
+    "ENCODE cCRE-dELS": _CMAP_DEFAULT[-4],
+    "ENCODE CTCF-only": "#969696",
+    "Super enhancers": _CMAP_ROTATED[-2],
+    "FANTOM enhancers": _CMAP_ROTATED[-4],
+}
+GWAS_ANN_COLORS = {
+    "GWAS Catalog": _CMAP_ROTATED[-5],
+    "GWAS Catalog repl (ext)": _CMAP_ROTATED[-4],
+    "GWAS fine-mapping": _CMAP_ROTATED[-2],
+}
 
 
 def style_axes(ax) -> None:
