@@ -16,12 +16,27 @@ Unlike the autosomal analyses, this uses `data/gnocchi_1kb_chrX_par_public.txt.g
 as in `unadjusted_gnocchi_analysis.py`, using `load_expected_unadj()` for the
 matching chrX rows (same element_ids, 1:1).
 
+z_adj comes from `results/par_regional_adjustment.tsv.gz`, produced by
+`regional_corrections/compute_par_rr.py`. gnomAD's released PAR scores were
+never regionally adjusted -- the published feature matrix is autosome-only, so
+every chrX window hit the pipeline's `rr = 1` fallback and the shipped `gnocchi`
+column equals the unadjusted score. That adjustment is now computed from a
+PAR-specific feature matrix, so `delta_z` here means "effect of the regional
+correction" (repo convention: z_unadj - z_adj).
+
+Read every number below with one caveat: only 7 of the 13 regional features
+have usable data in PAR. `recomb_male` -- selected in 31 of 32 contexts -- is
+among the 6 masked, yet obligate male recombination is PAR1's defining feature.
+This correction covers sequence and annotation composition, not recombination.
+Measured on autosomes, masking those 6 retains r=0.85 with the full-feature
+adjustment and biases expected by about +1.7%.
+
 Not attempted here -- data unavailable for chrX (see README): feature
 profiling / correlations / ridge decomposition / LOFO (Analyses A, D, E, F
-all require `genomic_features13_genome_1kb.txt.gz`, which is autosome-only),
-mappability diagnostics (`gnocchi.windows.mq.lcr.segdup.stats.tsv.gz` is also
-autosome-only), and roulette mutation-rate comparisons (chrX/Y unavailable
-there too).
+all require the autosome-only 52-column matrix, and the PAR matrix populates
+only the 7 unmasked features), mappability diagnostics
+(`gnocchi.windows.mq.lcr.segdup.stats.tsv.gz` is autosome-only), and roulette
+mutation-rate comparisons (chrX/Y unavailable there too).
 
 Outputs (all in results/, `par_` prefixed):
   par_summary.tsv              - mean/median z_adj, z_unadj, delta_z, O/E for
@@ -52,6 +67,7 @@ from distributions import z_stats
 from spatial_acf import MAX_LAG, compute_acf, prepare_chrom_arrays, sample_background_acf
 
 PAR_GNOCCHI_TABLE = os.path.join(DATA_DIR, "gnocchi_1kb_chrX_par_public.txt.gz")
+PAR_ADJUSTMENT_TABLE = os.path.join(RESULTS_DIR, "par_regional_adjustment.tsv.gz")
 
 # hg38 pseudoautosomal region boundaries
 PAR_REGIONS: dict[str, tuple[str, int, int, str]] = {
@@ -105,10 +121,25 @@ def load_par_gnocchi() -> pd.DataFrame:
     df = par.merge(unadj, on="element_id", how="inner")
     print(f"  {len(df):,} windows after inner join")
 
-    df["z_adj"] = df["gnocchi"]
+    print("Loading regional adjustment ...")
+    if not os.path.exists(PAR_ADJUSTMENT_TABLE):
+        raise FileNotFoundError(
+            f"{PAR_ADJUSTMENT_TABLE} not found -- run "
+            "regional_corrections/compute_par_rr.py first."
+        )
+    adj = pd.read_csv(PAR_ADJUSTMENT_TABLE, sep="\t",
+                      usecols=["element_id", "expected_adj", "rr_mean", "z_adj_new"])
+    df = df.merge(adj, on="element_id", how="inner")
+    print(f"  {len(df):,} windows with a regional adjustment "
+          f"(mean rr {df['rr_mean'].mean():.4f})")
+
+    # The shipped `gnocchi`/`expected` columns are the unadjusted scores, since
+    # PAR hit the pipeline's rr = 1 fallback; z_adj now comes from our own
+    # PAR-specific regional adjustment instead.
+    df["z_adj"] = df["z_adj_new"]
     df["z_unadj"] = compute_gnocchi_z(df["observed"].values, df["expected_unadj"].values)
     df["delta_z"] = df["z_unadj"] - df["z_adj"]
-    df["oe_adj"] = df["observed"] / df["expected"]
+    df["oe_adj"] = df["observed"] / df["expected_adj"]
     df["oe_unadj"] = df["observed"] / df["expected_unadj"]
     return df
 
